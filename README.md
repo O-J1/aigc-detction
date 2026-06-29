@@ -119,7 +119,7 @@ torchrun --nproc_per_node=2 scripts/train.py --config configs/local_2gpu.yaml
 
 ## Cluster Run
 
-Use `configs/cluster_32a100.yaml` as the base profile. The launcher command depends on the environment, but the script is designed for `torchrun` or a SLURM wrapper that sets `RANK`, `WORLD_SIZE`, and `LOCAL_RANK`.
+Use `configs/cluster.yaml` as the base profile. The launcher command depends on the environment, but the script is designed for `torchrun` or a SLURM wrapper that sets `RANK`, `WORLD_SIZE`, and `LOCAL_RANK`.
 
 ## MICV Defaults Chosen Where Underspecified
 

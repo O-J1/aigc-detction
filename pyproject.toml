@@ -16,7 +16,22 @@ dependencies = [
     "PyYAML>=6.0.3",
     "scikit-learn>=1.9",
     "tqdm>=4.68.3",
+    "torch>=2.12.1",
+    "torchvision>=0.27.1",
 ]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [project.optional-dependencies]
 large-data = ["pandas>=2.3.3", "pyarrow>=22"]
