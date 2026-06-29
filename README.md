@@ -1,8 +1,8 @@
-# MICV AIGC Detection
+# AIGC Det
 
-This repository is the start of a clean PyTorch 2.12 implementation of the MICV DINOv3 ensemble described in [MICV_framework.md](MICV_framework.md) and [DINOv3-based-framework.png](DINOv3-based-framework.png).
+Pytorch 2.12 guesstimation of the [MICV_framework.md](MICV_framework.md)
 
-The authors have not yet not released code or model weights, so this implementation makes the missing pieces explicit and configurable. The initial defaults follow the paper where possible: two DINOv3 streams, four backbones in stream 1, two backbones in stream 2, per-stream projection and MLP heads, late probability averaging, focal loss, AdamW, warmup plus cosine scheduling, SWA, and ROC AUC validation.
+The authors have not yet not released code or model weights. The initial defaults follow the paper where possible: two DINOv3 streams, four backbones in stream 1, two backbones in stream 2, per-stream projection and MLP heads, late probability averaging, focal loss, AdamW, warmup plus cosine scheduling, SWA, and ROC AUC validation.
 
 <img src="Arch.png" width="950">
 
@@ -10,7 +10,7 @@ The authors have not yet not released code or model weights, so this implementat
 
 - Full end-to-end fine-tuning from the first training run.
 - Local 1-2 GPU smoke runs with small DINOv3 variants.
-- 32 A100 cluster profile for the real training run.
+- Cluster profile for the real training run.
 - Manifest-first data loading for large datasets, with folder-to-manifest import support.
 - Dummy-backbone smoke path for testing the trainer without Hugging Face access.
 
@@ -117,9 +117,9 @@ For a trainer-only check without Hugging Face access, keep `model.use_dummy_back
 torchrun --nproc_per_node=2 scripts/train.py --config configs/local_2gpu.yaml
 ```
 
-## 32 A100 Cluster Run
+## Cluster Run
 
-Use `configs/cluster_32a100.yaml` as the base profile. The launcher command depends on the JSC environment, but the script is designed for `torchrun` or a SLURM wrapper that sets `RANK`, `WORLD_SIZE`, and `LOCAL_RANK`.
+Use `configs/cluster_32a100.yaml` as the base profile. The launcher command depends on the environment, but the script is designed for `torchrun` or a SLURM wrapper that sets `RANK`, `WORLD_SIZE`, and `LOCAL_RANK`.
 
 ## MICV Defaults Chosen Where Underspecified
 
