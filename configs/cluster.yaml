@@ -1,0 +1,60 @@
+experiment_name: micv_cluster_32
+
+model:
+  use_dummy_backbone: false
+  dummy_feature_dim: 64
+  stream1_backbones: 4
+  stream2_backbones: 2
+  latent_dim: 1024
+  mlp_hidden_dims: [1024, 256]
+  dropout: 0.2
+  backbone:
+    model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
+    trust_remote_code: true
+    gradient_checkpointing: true
+    freeze: false
+
+data:
+  train_manifest: manifests/train.parquet
+  val_manifest: manifests/val_10k_balanced.parquet
+  root_dir: null
+  train_split: train
+  val_split: val
+  image_size: 512
+  batch_size: 4
+  num_workers: 12
+  pin_memory: true
+  persistent_workers: true
+  balanced_sampling: false
+
+augmentation:
+  train_difficulty: mixed
+  static_val_augmentation: true
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+training:
+  epochs: 10
+  learning_rate: 1.0e-5
+  weight_decay: 0.02
+  warmup_epochs: 1
+  min_learning_rate: 1.0e-7
+  amp: true
+  gradient_accumulation_steps: 1
+  clip_grad_norm: 1.0
+  validate_every_epochs: 1
+  output_dir: outputs/cluster_32a100
+  seed: 1337
+  deterministic: false
+  log_every_steps: 50
+  resume_from: null
+  auxiliary_stream_loss_weight: 0.0
+
+swa:
+  enabled: true
+  start_epoch: 8
+  learning_rate: 5.0e-6
+
+distributed:
+  enabled: true
+  backend: nccl

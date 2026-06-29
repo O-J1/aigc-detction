@@ -1,0 +1,77 @@
+seed: 42
+random_train_fraction: 0.8
+random_split_unit: image
+sources:
+  - path: D:/aigc-dataset/NITRE 2026 AIGC Challenge/train/real
+    label: real
+    split: train
+    source_tier: challenge
+    source_dataset: nitre_2026_aigc_challenge
+
+  - path: D:/aigc-dataset/NITRE 2026 AIGC Challenge/train/fake
+    label: fake
+    split: train
+    source_tier: challenge
+    source_dataset: nitre_2026_aigc_challenge
+    generator: nitre_mixed
+
+  - path: D:/aigc-dataset/NITRE 2026 AIGC Challenge/val/real
+    label: real
+    split: val
+    source_tier: challenge
+    source_dataset: nitre_2026_aigc_challenge
+
+  - path: D:/aigc-dataset/NITRE 2026 AIGC Challenge/val/fake
+    label: fake
+    split: val
+    source_tier: challenge
+    source_dataset: nitre_2026_aigc_challenge
+    generator: nitre_mixed
+
+  - path: D:/aigc-dataset/images
+    label: fake
+    split: random
+    source_tier: local_aigc
+    source_dataset: mixed_local_aigc_images
+    generator: mixed_local_aigc
+    keep_percent: 40
+    min_per_leaf_folder: 1
+
+  - path: E:/datasets/sampled_images/random_tagged_dataset_smol/random_tagged_dataset_smol
+    label: real
+    split: random
+    source_tier: local_real
+    source_dataset: random_tagged_dataset_smol
+    keep_percent: 100
+    min_per_leaf_folder: 1
+
+  - path: E:/datasets/sampled_images/wikiarts
+    label: real
+    split: random
+    source_tier: local_real
+    source_dataset: wikiarts
+    keep_percent: 100
+    min_per_leaf_folder: 1
+
+  - path: E:/datasets/unsplash-research-dataset-lite-latest/photos
+    label: real
+    split: random
+    source_tier: local_real
+    source_dataset: unsplash_research_lite
+    keep_percent: 100
+    min_per_leaf_folder: 1
+
+  - path: D:/dataset
+    label: real
+    split: random
+    source_tier: local_real
+    source_dataset: local_real_dataset
+    keep_percent: 50
+    min_per_leaf_folder: 1
+
+  - path: D:\aigc-dataset\known_models
+    label: fake
+    split: random
+    source_tier: local_aigc
+    source_dataset: local_aigc
+    min_per_leaf_folder: 1
