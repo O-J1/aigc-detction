@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -12,11 +13,17 @@ from torch.utils.data import DataLoader, DistributedSampler
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from micv.data import AIGCManifestDataset, build_eval_transform, build_train_transform, make_weighted_sampler  # noqa: E402
+from micv.data import (  # noqa: E402
+    AIGCManifestDataset,
+    DistributedWeightedSampler,
+    build_eval_transform,
+    build_train_transform,
+    make_weighted_sampler,
+)
 from micv.models import MICVDualStreamEnsemble  # noqa: E402
 from micv.training.distributed import get_rank, init_distributed_from_env, is_distributed  # noqa: E402
 from micv.training.losses import BinaryFocalLossWithLogits, CombinedMICVLoss  # noqa: E402
-from micv.training.scheduler import build_warmup_cosine_scheduler  # noqa: E402
+from micv.training.scheduler import build_param_groups, build_warmup_cosine_scheduler  # noqa: E402
 from micv.training.trainer import Trainer, load_checkpoint  # noqa: E402
 from micv.utils import load_config, seed_everything  # noqa: E402
 
@@ -45,6 +52,8 @@ def main() -> None:
     train_transform = build_train_transform(
         image_size=config.data.image_size,
         difficulty=config.augmentation.train_difficulty,
+        clean_prob=config.augmentation.clean_prob,
+        max_ops=config.augmentation.max_ops,
         mean=config.augmentation.mean,
         std=config.augmentation.std,
     )
@@ -60,6 +69,7 @@ def main() -> None:
         split=config.data.train_split,
         root_dir=config.data.root_dir,
         transform=train_transform,
+        delete_invalid_images=config.data.delete_invalid_images and get_rank() == 0,
     )
     val_dataset = None
     if config.data.val_manifest is not None:
@@ -68,9 +78,12 @@ def main() -> None:
             split=config.data.val_split,
             root_dir=config.data.root_dir,
             transform=eval_transform,
+            delete_invalid_images=config.data.delete_invalid_images and get_rank() == 0,
         )
 
-    if is_distributed():
+    if is_distributed() and config.data.balanced_sampling:
+        train_sampler = DistributedWeightedSampler(train_dataset, replacement=True)
+    elif is_distributed():
         train_sampler = DistributedSampler(train_dataset, shuffle=True)
     elif config.data.balanced_sampling:
         train_sampler = make_weighted_sampler(train_dataset)
@@ -106,10 +119,14 @@ def main() -> None:
         )
         if train_dataset.skipped_bad_images:
             print(f"skipped invalid train images={len(train_dataset.skipped_bad_images)}")
+        if train_dataset.deleted_bad_images:
+            print(f"deleted invalid train images={len(train_dataset.deleted_bad_images)}")
         if val_dataset is not None and val_loader is not None:
             print(f"val records={len(val_dataset)} steps={len(val_loader)} batch_size={config.data.batch_size}")
             if val_dataset.skipped_bad_images:
                 print(f"skipped invalid val images={len(val_dataset.skipped_bad_images)}")
+            if val_dataset.deleted_bad_images:
+                print(f"deleted invalid val images={len(val_dataset.deleted_bad_images)}")
 
     model = MICVDualStreamEnsemble.from_config(asdict(config.model)).to(device)
     if distributed_started:
@@ -117,14 +134,18 @@ def main() -> None:
         model = DistributedDataParallel(model, device_ids=device_ids)
 
     optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.training.learning_rate,
-        weight_decay=config.training.weight_decay,
+        build_param_groups(
+            model,
+            backbone_lr=config.training.learning_rate,
+            head_lr=config.training.learning_rate,
+            weight_decay=config.training.weight_decay,
+        )
     )
+    steps_per_epoch = math.ceil(len(train_loader) / config.training.gradient_accumulation_steps)
     scheduler = build_warmup_cosine_scheduler(
         optimizer,
         epochs=config.training.epochs,
-        steps_per_epoch=max(1, len(train_loader) // config.training.gradient_accumulation_steps),
+        steps_per_epoch=max(1, steps_per_epoch),
         warmup_epochs=config.training.warmup_epochs,
         min_learning_rate=config.training.min_learning_rate,
     )
@@ -144,9 +165,11 @@ def main() -> None:
         device=device,
         output_dir=config.training.output_dir,
         amp=config.training.amp,
+        amp_dtype=config.training.amp_dtype,
         gradient_accumulation_steps=config.training.gradient_accumulation_steps,
         clip_grad_norm=config.training.clip_grad_norm,
         log_every_steps=config.training.log_every_steps,
+        validate_every_epochs=config.training.validate_every_epochs,
         swa_enabled=config.swa.enabled,
         swa_start_epoch=config.swa.start_epoch,
         swa_learning_rate=config.swa.learning_rate,

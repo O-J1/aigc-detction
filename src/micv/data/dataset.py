@@ -3,15 +3,15 @@ from __future__ import annotations
 import csv
 import math
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
+import torch.distributed as distributed
 from PIL import Image, ImageFile
-from torch.utils.data import Dataset, WeightedRandomSampler
-
-from micv.data.labels import FAKE_CLASS_NAMES, REAL_CLASS_NAMES
+from torch.utils.data import Dataset, Sampler, WeightedRandomSampler
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -36,16 +36,21 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
         root_dir: str | Path | None = None,
         transform: Any | None = None,
         bad_image_policy: str = "skip",
+        delete_invalid_images: bool = False,
         require_label: bool = True,
     ) -> None:
         if bad_image_policy not in {"raise", "skip", "zero"}:
             raise ValueError("bad_image_policy must be one of: raise, skip, zero")
+        if delete_invalid_images and bad_image_policy != "skip":
+            raise ValueError("delete_invalid_images requires bad_image_policy='skip'")
         self.manifest_path = Path(manifest_path)
         self.root_dir = Path(root_dir) if root_dir is not None else self.manifest_path.parent
         self.transform = transform
         self.bad_image_policy = bad_image_policy
+        self.delete_invalid_images = delete_invalid_images
         self.require_label = require_label
         self.skipped_bad_images: list[Path] = []
+        self.deleted_bad_images: list[Path] = []
         self.records = self._load_records(split=split)
         if self.bad_image_policy in {"raise", "skip"}:
             self.records = self._filter_loadable_records(self.records)
@@ -59,7 +64,10 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
         record = self.records[index]
         image = self._load_image(record.path)
         if self.transform is not None:
-            image = self.transform(image)
+            if getattr(self.transform, "needs_record", False):
+                image = self.transform(image, record)
+            else:
+                image = self.transform(image)
         label = torch.tensor(record.label, dtype=torch.float32)
         return {
             "image": image,
@@ -122,10 +130,20 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
             except Exception as error:
                 if self.bad_image_policy == "skip":
                     self.skipped_bad_images.append(record.path)
+                    if self.delete_invalid_images:
+                        self._delete_invalid_image(record.path)
                     continue
                 raise ValueError(f"Invalid image in {self.manifest_path}: {record.path}") from error
             filtered_records.append(record)
         return filtered_records
+
+    def _delete_invalid_image(self, image_path: Path) -> None:
+        if image_path.suffix.lower() not in IMAGE_SUFFIXES:
+            return
+        if not image_path.is_file():
+            return
+        image_path.unlink()
+        self.deleted_bad_images.append(image_path)
 
     def _load_image(self, image_path: Path) -> Image.Image:
         try:
@@ -137,8 +155,7 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
 
 
 def verify_image(image_path: str | Path) -> None:
-    with Image.open(image_path) as image:
-        image.verify()
+    load_rgb_image(image_path)
 
 
 def load_rgb_image(
@@ -174,8 +191,71 @@ def normalize_label(value: Any) -> int:
     raise ValueError(f"Unsupported label value: {value!r}")
 
 
-def make_weighted_sampler(dataset: AIGCManifestDataset) -> WeightedRandomSampler:
+class DistributedWeightedSampler(Sampler[int]):
+    """Weighted sampler that draws globally, then shards samples by distributed rank."""
+
+    def __init__(
+        self,
+        dataset: AIGCManifestDataset,
+        num_replicas: int | None = None,
+        rank: int | None = None,
+        replacement: bool = True,
+        seed: int = 0,
+        drop_last: bool = False,
+    ) -> None:
+        if num_replicas is None:
+            if not distributed.is_available() or not distributed.is_initialized():
+                raise RuntimeError("Requires distributed package to be available and initialized")
+            num_replicas = distributed.get_world_size()
+        if rank is None:
+            if not distributed.is_available() or not distributed.is_initialized():
+                raise RuntimeError("Requires distributed package to be available and initialized")
+            rank = distributed.get_rank()
+        if rank < 0 or rank >= num_replicas:
+            raise ValueError(f"Invalid rank {rank}; rank must be in [0, {num_replicas - 1}]")
+
+        self.dataset = dataset
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.replacement = replacement
+        self.seed = seed
+        self.drop_last = drop_last
+        self.epoch = 0
+        self.weights = _make_label_weights(dataset)
+
+        if self.drop_last and len(self.dataset) % self.num_replicas != 0:
+            self.num_samples = math.ceil((len(self.dataset) - self.num_replicas) / self.num_replicas)
+        else:
+            self.num_samples = math.ceil(len(self.dataset) / self.num_replicas)
+        self.total_size = self.num_samples * self.num_replicas
+        if not self.replacement and self.total_size > len(self.dataset):
+            raise ValueError("replacement=False requires drop_last=True when dataset is not evenly divisible")
+
+    def __iter__(self) -> Iterator[int]:
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + self.epoch)
+        global_indices = torch.multinomial(
+            self.weights,
+            self.total_size,
+            self.replacement,
+            generator=generator,
+        ).tolist()
+        rank_indices = global_indices[self.rank : self.total_size : self.num_replicas]
+        return iter(rank_indices)
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+
+def _make_label_weights(dataset: AIGCManifestDataset) -> torch.Tensor:
     label_counts = Counter(dataset.labels)
     sample_weights = [1.0 / label_counts[label] for label in dataset.labels]
-    weights_tensor = torch.as_tensor(sample_weights, dtype=torch.double)
+    return torch.as_tensor(sample_weights, dtype=torch.double)
+
+
+def make_weighted_sampler(dataset: AIGCManifestDataset) -> WeightedRandomSampler:
+    weights_tensor = _make_label_weights(dataset)
     return WeightedRandomSampler(weights_tensor, num_samples=len(weights_tensor), replacement=True)

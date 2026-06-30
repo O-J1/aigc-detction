@@ -1,0 +1,59 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "pytest augmentation focused",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"-m",
+				"pytest",
+				"tests/test_ntire_transforms.py",
+				"tests/test_dataset_images.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "pytest full",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"-m",
+				"pytest"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "ruff touched files",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"-m",
+				"ruff",
+				"check",
+				"src/micv/data/transforms.py",
+				"src/micv/data/dataset.py",
+				"src/micv/data/__init__.py",
+				"tests/test_ntire_transforms.py",
+				"tests/test_dataset_images.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "pytest augmentation focused rerun",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"-m",
+				"pytest",
+				"tests/test_ntire_transforms.py",
+				"tests/test_dataset_images.py"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+	]
+}

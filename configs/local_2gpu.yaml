@@ -5,14 +5,18 @@ model:
   dummy_feature_dim: 64
   stream1_backbones: 4
   stream2_backbones: 2
-  latent_dim: 512
-  mlp_hidden_dims: [512, 128]
+  latent_dim: 1024
+  mlp_hidden_dims: [1024, 256]
   dropout: 0.2
+  token_pooling: attention
   backbone:
     model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
     trust_remote_code: true
     gradient_checkpointing: true
     freeze: false
+    output_mode: patch_tokens
+    include_cls_token: false
+    include_register_tokens: false
 
 data:
   train_manifest: manifests/train.csv
@@ -29,7 +33,9 @@ data:
 
 augmentation:
   train_difficulty: mixed
-  static_val_augmentation: false
+  static_val_augmentation: true
+  clean_prob: 0.30
+  max_ops: 5
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
 

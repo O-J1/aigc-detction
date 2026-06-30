@@ -28,8 +28,10 @@ class BinaryClassificationMetrics:
         self.targets: list[Tensor] = []
 
     def update(self, probabilities: Tensor, targets: Tensor) -> None:
-        self.probabilities.append(probabilities.detach().flatten().cpu())
-        self.targets.append(targets.detach().flatten().cpu())
+        self.probabilities.append(
+            probabilities.detach().flatten().to(device="cpu", dtype=torch.float32)
+        )
+        self.targets.append(targets.detach().flatten().to(device="cpu", dtype=torch.float32))
 
     def compute(self) -> BinaryMetricResult:
         if not self.probabilities:

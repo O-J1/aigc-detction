@@ -1,3 +1,5 @@
+# src/micv/models/backbones.py
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,137 +16,141 @@ class DINOv3BackboneConfig:
     cache_dir: str | None = None
     trust_remote_code: bool = True
     feature_dim: int | None = None
-    pooling: str = "auto"
+
+    # New
+    output_mode: str = "patch_tokens"  # "patch_tokens" or "pooled"
+    include_cls_token: bool = False
+    include_register_tokens: bool = False
+
+    # Existing
+    pooling: str = "cls"  # used only for output_mode="pooled"
     freeze: bool = False
     gradient_checkpointing: bool = False
 
 
 class DINOv3Backbone(nn.Module):
-    """Thin Hugging Face wrapper that exposes a stable pooled feature tensor."""
-
     def __init__(self, config: DINOv3BackboneConfig) -> None:
         super().__init__()
         self.config = config
         self.model = self._load_hf_model(config)
-        self.pooling = config.pooling
         self.feature_dim = config.feature_dim or self._feature_dim_from_config()
 
         if self.feature_dim is None:
-            raise ValueError(
-                "Could not infer DINOv3 feature_dim from the Hugging Face config. "
-                "Set model.backbone.feature_dim in the YAML config."
-            )
+            raise ValueError("Set model.backbone.feature_dim; could not infer it.")
 
         if config.gradient_checkpointing and hasattr(self.model, "gradient_checkpointing_enable"):
             self.model.gradient_checkpointing_enable()
 
         if config.freeze:
-            for parameter in self.model.parameters():
-                parameter.requires_grad = False
+            for p in self.model.parameters():
+                p.requires_grad = False
 
     def forward(self, images: Tensor) -> Tensor:
-        return self.forward_features(images)
+        outputs = self._forward_hf(images)
 
-    def forward_features(self, images: Tensor) -> Tensor:
+        if self.config.output_mode == "patch_tokens":
+            return self._extract_patch_tokens(outputs)
+
+        if self.config.output_mode == "pooled":
+            return self._extract_pooled(outputs)
+
+        raise ValueError(f"Unsupported output_mode={self.config.output_mode!r}")
+
+    def _forward_hf(self, images: Tensor) -> Any:
         try:
-            outputs = self.model(pixel_values=images, return_dict=True)
+            return self.model(pixel_values=images, return_dict=True)
         except TypeError:
-            outputs = self.model(images)
-        return self._extract_features(outputs)
+            return self.model(images)
 
-    def _load_hf_model(self, config: DINOv3BackboneConfig) -> nn.Module:
-        try:
-            from transformers import AutoModel
-        except ImportError as error:
-            raise ImportError(
-                "transformers is required for DINOv3Backbone. Install the project with its "
-                "default dependencies or enable model.use_dummy_backbone for smoke tests."
-            ) from error
+    def _extract_patch_tokens(self, outputs: Any) -> Tensor:
+        last_hidden_state = _get_output(outputs, "last_hidden_state")
+        if last_hidden_state is None:
+            raise TypeError("DINOv3 patch-token mode requires outputs.last_hidden_state.")
 
-        model_kwargs: dict[str, Any] = {"trust_remote_code": config.trust_remote_code}
-        if config.revision is not None:
-            model_kwargs["revision"] = config.revision
-        if config.cache_dir is not None:
-            model_kwargs["cache_dir"] = config.cache_dir
-        return AutoModel.from_pretrained(config.model_name_or_path, **model_kwargs)
+        # ConvNeXt-style feature map: B,C,H,W -> B,N,C
+        if last_hidden_state.ndim == 4:
+            return last_hidden_state.flatten(2).transpose(1, 2).contiguous()
+
+        if last_hidden_state.ndim != 3:
+            raise ValueError(f"Expected B,N,C token tensor, got {tuple(last_hidden_state.shape)}")
+
+        num_registers = int(getattr(getattr(self.model, "config", None), "num_register_tokens", 0) or 0)
+
+        pieces: list[Tensor] = []
+
+        if self.config.include_cls_token:
+            pieces.append(last_hidden_state[:, :1, :])
+
+        if self.config.include_register_tokens and num_registers > 0:
+            pieces.append(last_hidden_state[:, 1 : 1 + num_registers, :])
+
+        patch_start = 1 + num_registers
+        pieces.append(last_hidden_state[:, patch_start:, :])
+
+        return torch.cat(pieces, dim=1) if len(pieces) > 1 else pieces[0]
+
+    def _extract_pooled(self, outputs: Any) -> Tensor:
+        pooler_output = _get_output(outputs, "pooler_output")
+        if pooler_output is not None:
+            return pooler_output
+
+        last_hidden_state = _get_output(outputs, "last_hidden_state")
+        if last_hidden_state is None:
+            raise TypeError("Could not extract pooled DINOv3 features.")
+
+        if last_hidden_state.ndim == 4:
+            return last_hidden_state.mean(dim=(-2, -1))
+
+        if self.config.pooling == "mean":
+            return last_hidden_state.mean(dim=1)
+
+        return last_hidden_state[:, 0]
 
     def _feature_dim_from_config(self) -> int | None:
         hf_config = getattr(self.model, "config", None)
         if hf_config is None:
             return None
-        for attribute_name in (
-            "hidden_size",
-            "embed_dim",
-            "hidden_dim",
-            "projection_dim",
-            "num_features",
-        ):
-            value = getattr(hf_config, attribute_name, None)
+
+        for name in ("hidden_size", "embed_dim", "hidden_dim", "projection_dim", "num_features"):
+            value = getattr(hf_config, name, None)
             if isinstance(value, int) and value > 0:
                 return value
+
         return None
 
-    def _extract_features(self, outputs: Any) -> Tensor:
-        if isinstance(outputs, Mapping):
-            pooler_output = outputs.get("pooler_output")
-            if pooler_output is not None:
-                return pooler_output
-            last_hidden_state = outputs.get("last_hidden_state")
-            if last_hidden_state is not None:
-                return self._pool_sequence(last_hidden_state)
+    def _load_hf_model(self, config: DINOv3BackboneConfig) -> nn.Module:
+        from transformers import AutoModel
 
-        pooler_output = getattr(outputs, "pooler_output", None)
-        if pooler_output is not None:
-            return pooler_output
+        kwargs: dict[str, Any] = {"trust_remote_code": config.trust_remote_code}
+        if config.revision is not None:
+            kwargs["revision"] = config.revision
+        if config.cache_dir is not None:
+            kwargs["cache_dir"] = config.cache_dir
 
-        last_hidden_state = getattr(outputs, "last_hidden_state", None)
-        if last_hidden_state is not None:
-            return self._pool_sequence(last_hidden_state)
+        return AutoModel.from_pretrained(config.model_name_or_path, **kwargs)
 
-        if isinstance(outputs, (tuple, list)) and outputs:
-            return self._pool_tensor(outputs[0])
 
-        if torch.is_tensor(outputs):
-            return self._pool_tensor(outputs)
-
-        raise TypeError(f"Unsupported DINOv3 output type: {type(outputs)!r}")
-
-    def _pool_sequence(self, sequence: Tensor) -> Tensor:
-        if sequence.ndim != 3:
-            return self._pool_tensor(sequence)
-        if self.pooling == "mean":
-            return sequence.mean(dim=1)
-        return sequence[:, 0]
-
-    @staticmethod
-    def _pool_tensor(features: Tensor) -> Tensor:
-        if features.ndim == 4:
-            return features.mean(dim=(-2, -1))
-        if features.ndim == 3:
-            return features[:, 0]
-        if features.ndim == 2:
-            return features
-        raise ValueError(f"Expected 2D, 3D, or 4D feature tensor, received shape {features.shape}")
+def _get_output(outputs: Any, name: str) -> Any:
+    if isinstance(outputs, Mapping):
+        return outputs.get(name)
+    return getattr(outputs, name, None)
 
 
 class TinyConvBackbone(nn.Module):
-    """Small backbone for trainer and shape smoke tests without HF access."""
+    """Token-output smoke backbone: B,3,H,W -> B,N,C."""
 
     def __init__(self, feature_dim: int = 64) -> None:
         super().__init__()
         self.feature_dim = feature_dim
         self.encoder = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(16),
+            nn.Conv2d(3, feature_dim // 2, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(feature_dim // 2),
             nn.GELU(),
-            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(32),
+            nn.Conv2d(feature_dim // 2, feature_dim, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(feature_dim),
             nn.GELU(),
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(32, feature_dim),
-            nn.LayerNorm(feature_dim),
         )
 
     def forward(self, images: Tensor) -> Tensor:
-        return self.encoder(images)
+        features = self.encoder(images)              # B,C,H,W
+        return features.flatten(2).transpose(1, 2)   # B,N,C

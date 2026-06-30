@@ -30,6 +30,8 @@ source_tier,source_dataset,generator,task_type,width,height,sha256,group_id
 
 Labels may be numeric (`0`, `1`) or text (`real`, `fake`, `ai`, `generated`). Relative paths are resolved against `data.root_dir` when set, otherwise against the manifest directory.
 
+Dataset construction preflights each manifest image by loading it through the same RGB Pillow path used during training. Invalid images are skipped by default. To also remove those invalid files before training starts, set `data.delete_invalid_images: true`; this only deletes regular files with recognized image extensions, but it is still destructive and should only be used when the image files can be regenerated or are already backed up.
+
 Folder layouts can be converted with:
 
 ```powershell
@@ -106,10 +108,10 @@ The emitted `split` column remains the source of truth. Forced train and validat
 The local configs are set to `facebook/dinov3-vitb16-pretrain-lvd1689m`. Set `data.train_manifest` and `data.val_manifest` before running against real data.
 
 ```powershell
-python scripts/train.py --config configs/local_smoke.yaml
+python scripts/train.py --config ./configs/local_smoke.yaml
 ```
 
-For a trainer-only check without Hugging Face access, keep `model.use_dummy_backbone: true` in the smoke config.
+For a trainer-only check without Honfigs/ugging Face access, keep `model.use_dummy_backbone: true` in the smoke config.
 
 ## 2 GPU Trial
 
@@ -120,6 +122,7 @@ torchrun --nproc_per_node=2 scripts/train.py --config configs/local_2gpu.yaml
 ## Cluster Run
 
 Use `configs/cluster.yaml` as the base profile. The launcher command depends on the environment, but the script is designed for `torchrun` or a SLURM wrapper that sets `RANK`, `WORLD_SIZE`, and `LOCAL_RANK`.
+The cluster profile uses `training.amp_dtype: bf16` for A100 mixed precision without gradient scaling.
 
 ## MICV Defaults Chosen Where Underspecified
 

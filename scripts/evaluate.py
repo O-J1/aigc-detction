@@ -67,6 +67,7 @@ def main() -> None:
         device=device,
         output_dir=config.training.output_dir,
         amp=config.training.amp,
+        amp_dtype=config.training.amp_dtype,
         swa_enabled=False,
     )
     metrics = trainer.evaluate(data_loader)

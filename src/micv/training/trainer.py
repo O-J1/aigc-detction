@@ -28,9 +28,11 @@ class Trainer:
         device: torch.device,
         output_dir: str | Path,
         amp: bool = True,
+        amp_dtype: str = "fp16",
         gradient_accumulation_steps: int = 1,
         clip_grad_norm: float | None = None,
         log_every_steps: int = 50,
+        validate_every_epochs: int = 1,
         swa_enabled: bool = False,
         swa_start_epoch: int = 8,
         swa_learning_rate: float = 5.0e-6,
@@ -44,11 +46,13 @@ class Trainer:
         self.device = device
         self.output_dir = Path(output_dir)
         self.amp = amp and device.type == "cuda"
+        self.amp_dtype = _resolve_amp_dtype(amp_dtype)
         self.gradient_accumulation_steps = max(1, gradient_accumulation_steps)
         self.clip_grad_norm = clip_grad_norm
         self.log_every_steps = log_every_steps
+        self.validate_every_epochs = max(1, validate_every_epochs)
         self.best_roc_auc = float("-inf")
-        self.scaler = _make_grad_scaler(device, self.amp)
+        self.scaler = _make_grad_scaler(device) if self.amp and self.amp_dtype == torch.float16 else None
 
         self.swa_enabled = swa_enabled
         self.swa_start_epoch = swa_start_epoch
@@ -65,9 +69,14 @@ class Trainer:
                 sampler.set_epoch(epoch_index)
 
             train_loss = self.train_one_epoch(epoch_index)
-            metric_result = None
-            if self.val_loader is not None:
-                metric_result = self.evaluate(self.val_loader)
+            should_validate = (
+                self.val_loader is not None
+                and (
+                    (epoch_index + 1) % self.validate_every_epochs == 0
+                    or (epoch_index + 1) == epochs
+                )
+            )
+            metric_result = self.evaluate(self.val_loader) if should_validate else None
 
             if self.swa_enabled and self.swa_model is not None and epoch_index + 1 >= self.swa_start_epoch:
                 self.swa_model.update_parameters(_unwrap_model(self.model))
@@ -100,18 +109,29 @@ class Trainer:
 
         for step_index, batch in progress:
             images, targets = self._prepare_batch(batch)
-            with torch.autocast(device_type=self.device.type, enabled=self.amp):
+            with torch.autocast(
+                device_type=self.device.type,
+                dtype=self.amp_dtype,
+                enabled=self.amp,
+            ):
                 outputs = self.model(images)
                 loss = self.loss_fn(outputs, targets) / self.gradient_accumulation_steps
 
-            self.scaler.scale(loss).backward()
+            if self.scaler is not None:
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
             should_step = step_index % self.gradient_accumulation_steps == 0 or step_index == num_batches
             if should_step:
                 if self.clip_grad_norm is not None:
-                    self.scaler.unscale_(self.optimizer)
+                    if self.scaler is not None:
+                        self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                if self.scaler is not None:
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
                 if self.scheduler is not None and not self._swa_active(epoch_index):
                     self.scheduler.step()
@@ -130,7 +150,11 @@ class Trainer:
         progress = tqdm(data_loader, disable=not is_main_process(), desc="validate")
         for batch in progress:
             images, targets = self._prepare_batch(batch)
-            with torch.autocast(device_type=self.device.type, enabled=self.amp):
+            with torch.autocast(
+                device_type=self.device.type,
+                dtype=self.amp_dtype,
+                enabled=self.amp,
+            ):
                 outputs = self.model(images)
             probabilities = outputs["fused_prob"].detach().flatten()
             gathered_probabilities = all_gather_1d_tensor(probabilities)
@@ -158,7 +182,7 @@ class Trainer:
             "model": _unwrap_model(self.model).state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
-            "scaler": self.scaler.state_dict(),
+            "scaler": self.scaler.state_dict() if self.scaler is not None else None,
             "train_loss": train_loss,
             "metrics": _metric_to_dict(metric_result),
         }
@@ -188,11 +212,19 @@ def _unwrap_model(model: nn.Module) -> nn.Module:
     return model.module if hasattr(model, "module") else model
 
 
-def _make_grad_scaler(device: torch.device, enabled: bool):
+def _resolve_amp_dtype(name: str) -> torch.dtype:
+    if name == "bf16":
+        return torch.bfloat16
+    if name == "fp16":
+        return torch.float16
+    raise ValueError(f"Unsupported amp dtype: {name}")
+
+
+def _make_grad_scaler(device: torch.device):
     try:
-        return torch.amp.GradScaler(device.type, enabled=enabled)
+        return torch.amp.GradScaler(device.type)
     except TypeError:
-        return torch.cuda.amp.GradScaler(enabled=enabled)
+        return torch.cuda.amp.GradScaler()
 
 
 def _metric_to_dict(metric_result: BinaryMetricResult | None) -> dict[str, Any] | None:

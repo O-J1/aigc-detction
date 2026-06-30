@@ -17,6 +17,9 @@ class BackboneSettings:
     pooling: str = "auto"
     freeze: bool = False
     gradient_checkpointing: bool = True
+    output_mode: str = "patch_tokens"
+    include_cls_token: bool = False
+    include_register_tokens: bool = False
 
 
 @dataclass
@@ -25,9 +28,10 @@ class ModelSettings:
     dummy_feature_dim: int = 64
     stream1_backbones: int = 4
     stream2_backbones: int = 2
-    latent_dim: int = 512
-    mlp_hidden_dims: list[int] = field(default_factory=lambda: [512, 128])
+    latent_dim: int = 1024
+    mlp_hidden_dims: list[int] = field(default_factory=lambda: [1024, 256])
     dropout: float = 0.2
+    token_pooling: str = "attention"
     backbone: BackboneSettings = field(default_factory=BackboneSettings)
 
 
@@ -44,12 +48,15 @@ class DataSettings:
     pin_memory: bool = True
     persistent_workers: bool = True
     balanced_sampling: bool = True
+    delete_invalid_images: bool = False
 
 
 @dataclass
 class AugmentationSettings:
     train_difficulty: str = "mixed"
-    static_val_augmentation: bool = False
+    static_val_augmentation: bool = True
+    clean_prob: float = 0.30
+    max_ops: int = 5
     mean: list[float] = field(default_factory=lambda: [0.485, 0.456, 0.406])
     std: list[float] = field(default_factory=lambda: [0.229, 0.224, 0.225])
 
@@ -62,6 +69,7 @@ class TrainingSettings:
     warmup_epochs: int = 1
     min_learning_rate: float = 1.0e-7
     amp: bool = True
+    amp_dtype: str = "fp16"
     gradient_accumulation_steps: int = 1
     clip_grad_norm: float | None = 1.0
     validate_every_epochs: int = 1

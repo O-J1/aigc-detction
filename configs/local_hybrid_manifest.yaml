@@ -1,16 +1,18 @@
 seed: 42
-random_train_fraction: 0.8
+random_train_fraction: 0.9
 random_split_unit: image
 sources:
   - path: D:/aigc-dataset/NITRE 2026 AIGC Challenge/train/real
     label: real
     split: train
+    keep_percent: 5
     source_tier: challenge
     source_dataset: nitre_2026_aigc_challenge
 
   - path: D:/aigc-dataset/NITRE 2026 AIGC Challenge/train/fake
     label: fake
     split: train
+    keep_percent: 5
     source_tier: challenge
     source_dataset: nitre_2026_aigc_challenge
     generator: nitre_mixed
@@ -34,7 +36,7 @@ sources:
     source_tier: local_aigc
     source_dataset: mixed_local_aigc_images
     generator: mixed_local_aigc
-    keep_percent: 40
+    keep_percent: 5
     min_per_leaf_folder: 1
 
   - path: E:/datasets/sampled_images/random_tagged_dataset_smol/random_tagged_dataset_smol
@@ -42,7 +44,7 @@ sources:
     split: random
     source_tier: local_real
     source_dataset: random_tagged_dataset_smol
-    keep_percent: 100
+    keep_percent: 5
     min_per_leaf_folder: 1
 
   - path: E:/datasets/sampled_images/wikiarts
@@ -50,7 +52,7 @@ sources:
     split: random
     source_tier: local_real
     source_dataset: wikiarts
-    keep_percent: 100
+    keep_percent: 5
     min_per_leaf_folder: 1
 
   - path: E:/datasets/unsplash-research-dataset-lite-latest/photos
@@ -58,7 +60,7 @@ sources:
     split: random
     source_tier: local_real
     source_dataset: unsplash_research_lite
-    keep_percent: 100
+    keep_percent: 5
     min_per_leaf_folder: 1
 
   - path: D:/dataset
@@ -66,7 +68,7 @@ sources:
     split: random
     source_tier: local_real
     source_dataset: local_real_dataset
-    keep_percent: 50
+    keep_percent: 5
     min_per_leaf_folder: 1
 
   - path: D:\aigc-dataset\known_models

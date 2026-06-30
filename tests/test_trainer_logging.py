@@ -1,7 +1,20 @@
 from __future__ import annotations
 
+import pytest
+import torch
+
 from micv.training.metrics import BinaryMetricResult
-from micv.training.trainer import _format_epoch_summary
+from micv.training.trainer import _format_epoch_summary, _resolve_amp_dtype
+
+
+def test_resolve_amp_dtype_accepts_supported_names() -> None:
+    assert _resolve_amp_dtype("bf16") is torch.bfloat16
+    assert _resolve_amp_dtype("fp16") is torch.float16
+
+
+def test_resolve_amp_dtype_rejects_unknown_name() -> None:
+    with pytest.raises(ValueError, match="Unsupported amp dtype: fp32"):
+        _resolve_amp_dtype("fp32")
 
 
 def test_format_epoch_summary_includes_validation_metrics() -> None:

@@ -2,20 +2,31 @@
 
 from micv.data.dataset import (
     AIGCManifestDataset,
+    DistributedWeightedSampler,
     load_rgb_image,
     make_weighted_sampler,
     verify_image,
 )
 from micv.data.labels import FAKE_CLASS_NAMES, REAL_CLASS_NAMES
-from micv.data.transforms import build_eval_transform, build_train_transform
+from micv.data.transforms import (
+    AUG_GROUPS,
+    NTIREAugmentationPolicy,
+    StaticNTIREValidationPolicy,
+    build_eval_transform,
+    build_train_transform,
+)
 
 __all__ = [
     "AIGCManifestDataset",
+    "AUG_GROUPS",
+    "DistributedWeightedSampler",
     "FAKE_CLASS_NAMES",
     "REAL_CLASS_NAMES",
     "build_eval_transform",
     "build_train_transform",
     "load_rgb_image",
     "make_weighted_sampler",
+    "NTIREAugmentationPolicy",
+    "StaticNTIREValidationPolicy",
     "verify_image",
 ]
