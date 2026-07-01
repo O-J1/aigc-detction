@@ -13,13 +13,15 @@ class RecordAwareTransform:
 
     def __init__(self) -> None:
         self.seen_path = None
+        self.seen_metadata = None
 
     def __call__(self, image, record):
         self.seen_path = record.path
+        self.seen_metadata = record.metadata
         return image
 
 
-def test_manifest_dataset_skips_invalid_images_at_init(tmp_path) -> None:
+def test_manifest_dataset_does_not_preflight_invalid_images_at_init(tmp_path) -> None:
     valid_path = tmp_path / "valid.png"
     invalid_path = tmp_path / "invalid.png"
     manifest_path = tmp_path / "manifest.csv"
@@ -35,46 +37,10 @@ def test_manifest_dataset_skips_invalid_images_at_init(tmp_path) -> None:
 
     dataset = AIGCManifestDataset(manifest_path, split="train")
 
-    assert len(dataset) == 1
-    assert dataset.skipped_bad_images == [invalid_path]
-    assert dataset.deleted_bad_images == []
+    assert len(dataset) == 2
     assert dataset[0]["path"] == str(valid_path)
-
-
-def test_manifest_dataset_deletes_invalid_images_when_enabled(tmp_path) -> None:
-    valid_path = tmp_path / "valid.png"
-    invalid_path = tmp_path / "invalid.png"
-    manifest_path = tmp_path / "manifest.csv"
-
-    Image.new("RGB", (4, 4), color=(255, 0, 0)).save(valid_path)
-    invalid_path.write_bytes(b"not a png")
-    manifest_path.write_text(
-        "path,label,split\n"
-        f"{valid_path.name},0,train\n"
-        f"{invalid_path.name},1,train\n",
-        encoding="utf-8",
-    )
-
-    dataset = AIGCManifestDataset(manifest_path, split="train", delete_invalid_images=True)
-
-    assert len(dataset) == 1
-    assert dataset.skipped_bad_images == [invalid_path]
-    assert dataset.deleted_bad_images == [invalid_path]
-    assert valid_path.exists()
-    assert not invalid_path.exists()
-
-
-def test_delete_invalid_images_requires_skip_policy(tmp_path) -> None:
-    manifest_path = tmp_path / "manifest.csv"
-    manifest_path.write_text("path,label,split\nmissing.png,0,train\n", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="delete_invalid_images requires"):
-        AIGCManifestDataset(
-            manifest_path,
-            split="train",
-            bad_image_policy="raise",
-            delete_invalid_images=True,
-        )
+    with pytest.raises(Exception):
+        _ = dataset[1]
 
 
 def test_palette_transparency_image_loads_without_warning(tmp_path) -> None:
@@ -97,8 +63,8 @@ def test_manifest_dataset_passes_record_to_record_aware_transform(tmp_path) -> N
     manifest_path = tmp_path / "manifest.csv"
     Image.new("RGB", (4, 4), color=(0, 255, 0)).save(image_path)
     manifest_path.write_text(
-        "path,label,split\n"
-        f"{image_path.name},0,val\n",
+        "path,label,split,md5\n"
+        f"{image_path.name},0,val,abc123\n",
         encoding="utf-8",
     )
     transform = RecordAwareTransform()
@@ -107,3 +73,4 @@ def test_manifest_dataset_passes_record_to_record_aware_transform(tmp_path) -> N
     _ = dataset[0]
 
     assert transform.seen_path == image_path
+    assert transform.seen_metadata == {"split": "val", "md5": "abc123", "manifest_path": image_path.name}

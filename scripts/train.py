@@ -22,7 +22,7 @@ from micv.data import (  # noqa: E402
 )
 from micv.models import MICVDualStreamEnsemble  # noqa: E402
 from micv.training.distributed import get_rank, init_distributed_from_env, is_distributed  # noqa: E402
-from micv.training.losses import BinaryFocalLossWithLogits, CombinedMICVLoss  # noqa: E402
+from micv.training.losses import BinaryFocalLossWithLogits, BinaryFocalLossWithProbabilities, CombinedMICVLoss  # noqa: E402
 from micv.training.scheduler import build_param_groups, build_warmup_cosine_scheduler  # noqa: E402
 from micv.training.trainer import Trainer, load_checkpoint  # noqa: E402
 from micv.utils import load_config, seed_everything  # noqa: E402
@@ -69,7 +69,6 @@ def main() -> None:
         split=config.data.train_split,
         root_dir=config.data.root_dir,
         transform=train_transform,
-        delete_invalid_images=config.data.delete_invalid_images and get_rank() == 0,
     )
     val_dataset = None
     if config.data.val_manifest is not None:
@@ -78,7 +77,6 @@ def main() -> None:
             split=config.data.val_split,
             root_dir=config.data.root_dir,
             transform=eval_transform,
-            delete_invalid_images=config.data.delete_invalid_images and get_rank() == 0,
         )
 
     if is_distributed() and config.data.balanced_sampling:
@@ -117,16 +115,8 @@ def main() -> None:
             f"train records={len(train_dataset)} steps_per_epoch={len(train_loader)} "
             f"batch_size={config.data.batch_size}"
         )
-        if train_dataset.skipped_bad_images:
-            print(f"skipped invalid train images={len(train_dataset.skipped_bad_images)}")
-        if train_dataset.deleted_bad_images:
-            print(f"deleted invalid train images={len(train_dataset.deleted_bad_images)}")
         if val_dataset is not None and val_loader is not None:
             print(f"val records={len(val_dataset)} steps={len(val_loader)} batch_size={config.data.batch_size}")
-            if val_dataset.skipped_bad_images:
-                print(f"skipped invalid val images={len(val_dataset.skipped_bad_images)}")
-            if val_dataset.deleted_bad_images:
-                print(f"deleted invalid val images={len(val_dataset.deleted_bad_images)}")
 
     model = MICVDualStreamEnsemble.from_config(asdict(config.model)).to(device)
     if distributed_started:
@@ -150,7 +140,8 @@ def main() -> None:
         min_learning_rate=config.training.min_learning_rate,
     )
     loss_fn = CombinedMICVLoss(
-        focal_loss=BinaryFocalLossWithLogits(alpha=0.5, gamma=2.0),
+        fused_loss=BinaryFocalLossWithProbabilities(alpha=0.5, gamma=2.0),
+        stream_loss=BinaryFocalLossWithLogits(alpha=0.5, gamma=2.0),
         fused_weight=1.0,
         stream_weight=config.training.auxiliary_stream_loss_weight,
     )

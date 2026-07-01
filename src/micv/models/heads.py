@@ -49,6 +49,61 @@ class TokenProjectionHead(nn.Module):
         return self.proj(fused)
 
 
+class PooledConcatHead(nn.Module):
+    """
+    Pool each slot independently, then concatenate:
+      ([B,C] or [B,N,C]) * k -> B,sum(C_i)
+    """
+
+    def __init__(
+        self,
+        slot_dims: Sequence[int],
+        token_pooling: str = "attention",
+        normalize_slots: bool = True,
+    ) -> None:
+        super().__init__()
+        self.slot_dims = list(slot_dims)
+        self.token_pooling = token_pooling
+        self.slot_norms = nn.ModuleList(
+            [nn.LayerNorm(dim) if normalize_slots else nn.Identity() for dim in self.slot_dims]
+        )
+
+        if token_pooling == "attention":
+            self.slot_pools = nn.ModuleList([AttentionTokenPool(dim) for dim in self.slot_dims])
+        elif token_pooling == "mean":
+            self.slot_pools = nn.ModuleList([MeanTokenPool() for _ in self.slot_dims])
+        else:
+            raise ValueError(f"Unsupported token_pooling={token_pooling!r}")
+
+    @property
+    def output_dim(self) -> int:
+        return sum(self.slot_dims)
+
+    def forward(self, slot_features: Sequence[Tensor]) -> Tensor:
+        if len(slot_features) != len(self.slot_dims):
+            raise ValueError(f"Expected {len(self.slot_dims)} slots, got {len(slot_features)}")
+
+        pooled_slots: list[Tensor] = []
+        for features, norm, pool in zip(
+            slot_features,
+            self.slot_norms,
+            self.slot_pools,
+            strict=True,
+        ):
+            if features.ndim == 2:
+                pooled = features
+            elif features.ndim == 3:
+                pooled = pool(features)
+            else:
+                raise ValueError(
+                    "pooled_concat_mlp expects each slot to produce B,C or B,N,C features, "
+                    f"got {tuple(features.shape)}"
+                )
+            pooled_slots.append(norm(pooled))
+
+        return torch.cat(pooled_slots, dim=-1)
+
+
 class MeanTokenPool(nn.Module):
     def forward(self, tokens: Tensor) -> Tensor:
         return tokens.mean(dim=1)

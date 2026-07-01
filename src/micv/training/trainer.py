@@ -144,9 +144,10 @@ class Trainer:
         return running_loss / max(1, num_batches)
 
     @torch.no_grad()
-    def evaluate(self, data_loader: DataLoader) -> BinaryMetricResult:
+    def evaluate(self, data_loader: DataLoader) -> BinaryMetricResult | None:
         self.model.eval()
         metrics = BinaryClassificationMetrics()
+        should_compute_metrics = is_main_process()
         progress = tqdm(data_loader, disable=not is_main_process(), desc="validate")
         for batch in progress:
             images, targets = self._prepare_batch(batch)
@@ -159,7 +160,10 @@ class Trainer:
             probabilities = outputs["fused_prob"].detach().flatten()
             gathered_probabilities = all_gather_1d_tensor(probabilities)
             gathered_targets = all_gather_1d_tensor(targets.detach().flatten())
-            metrics.update(gathered_probabilities.cpu(), gathered_targets.cpu())
+            if should_compute_metrics:
+                metrics.update(gathered_probabilities.cpu(), gathered_targets.cpu())
+        if not should_compute_metrics:
+            return None
         return metrics.compute()
 
     def _prepare_batch(self, batch: dict[str, Any]) -> tuple[Tensor, Tensor]:

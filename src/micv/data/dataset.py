@@ -15,8 +15,6 @@ from torch.utils.data import Dataset, Sampler, WeightedRandomSampler
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
-
 
 @dataclass(frozen=True)
 class ManifestRecord:
@@ -35,25 +33,17 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
         split: str | None = None,
         root_dir: str | Path | None = None,
         transform: Any | None = None,
-        bad_image_policy: str = "skip",
-        delete_invalid_images: bool = False,
+        bad_image_policy: str = "raise",
         require_label: bool = True,
     ) -> None:
-        if bad_image_policy not in {"raise", "skip", "zero"}:
-            raise ValueError("bad_image_policy must be one of: raise, skip, zero")
-        if delete_invalid_images and bad_image_policy != "skip":
-            raise ValueError("delete_invalid_images requires bad_image_policy='skip'")
+        if bad_image_policy not in {"raise", "zero"}:
+            raise ValueError("bad_image_policy must be one of: raise, zero")
         self.manifest_path = Path(manifest_path)
         self.root_dir = Path(root_dir) if root_dir is not None else self.manifest_path.parent
         self.transform = transform
         self.bad_image_policy = bad_image_policy
-        self.delete_invalid_images = delete_invalid_images
         self.require_label = require_label
-        self.skipped_bad_images: list[Path] = []
-        self.deleted_bad_images: list[Path] = []
         self.records = self._load_records(split=split)
-        if self.bad_image_policy in {"raise", "skip"}:
-            self.records = self._filter_loadable_records(self.records)
         if not self.records:
             raise ValueError(f"No records found in {self.manifest_path} for split={split!r}")
 
@@ -98,9 +88,11 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
                 raise ValueError("Manifest rows must include a path column.")
             if self.require_label and "label" not in row:
                 raise ValueError("Training/evaluation manifests must include a label column.")
-            image_path = self._resolve_path(str(row["path"]))
+            manifest_path = str(row["path"])
+            image_path = self._resolve_path(manifest_path)
             label = normalize_label(row["label"]) if "label" in row and row["label"] != "" else -1
             metadata = {key: value for key, value in row.items() if key not in {"path", "label"}}
+            metadata.setdefault("manifest_path", manifest_path)
             records.append(ManifestRecord(path=image_path, label=label, split=row_split, metadata=metadata))
         return records
 
@@ -121,29 +113,6 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
         if image_path.is_absolute():
             return image_path
         return self.root_dir / image_path
-
-    def _filter_loadable_records(self, records: list[ManifestRecord]) -> list[ManifestRecord]:
-        filtered_records: list[ManifestRecord] = []
-        for record in records:
-            try:
-                verify_image(record.path)
-            except Exception as error:
-                if self.bad_image_policy == "skip":
-                    self.skipped_bad_images.append(record.path)
-                    if self.delete_invalid_images:
-                        self._delete_invalid_image(record.path)
-                    continue
-                raise ValueError(f"Invalid image in {self.manifest_path}: {record.path}") from error
-            filtered_records.append(record)
-        return filtered_records
-
-    def _delete_invalid_image(self, image_path: Path) -> None:
-        if image_path.suffix.lower() not in IMAGE_SUFFIXES:
-            return
-        if not image_path.is_file():
-            return
-        image_path.unlink()
-        self.deleted_bad_images.append(image_path)
 
     def _load_image(self, image_path: Path) -> Image.Image:
         try:

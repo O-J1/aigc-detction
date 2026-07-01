@@ -58,8 +58,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--binary-split", default="train", help="Split name for binary-dirs layout.")
     parser.add_argument("--real-names", nargs="+", default=list(REAL_CLASS_NAMES))
     parser.add_argument("--fake-names", nargs="+", default=list(FAKE_CLASS_NAMES))
-    parser.add_argument("--hash", action="store_true", help="Compute SHA256 for each image.")
+    parser.add_argument("--hash", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--dimensions", action="store_true", help="Record image width and height.")
+    parser.add_argument(
+        "--no-verify-images",
+        action="store_false",
+        dest="verify_images",
+        help="Do not load images before writing the manifest.",
+    )
     parser.add_argument("--absolute-paths", action="store_true", help="Write absolute paths instead of root-relative paths.")
     parser.add_argument("--seed", type=int, default=42, help="Seed used by hybrid random splitting and sampling.")
     parser.add_argument(
@@ -76,6 +82,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--source-tier", default="custom")
     parser.add_argument("--source-dataset", default="custom")
+    parser.set_defaults(verify_images=True)
     return parser.parse_args()
 
 
@@ -85,9 +92,10 @@ def main() -> None:
     root = _manifest_root(args, spec)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    candidates = _deduplicate_candidates(
-        list(_iter_spec_candidates(args, root, spec) if spec is not None else _iter_candidates(args, root))
-    )
+    candidates = list(_iter_spec_candidates(args, root, spec) if spec is not None else _iter_candidates(args, root))
+    if args.verify_images:
+        candidates = _filter_verified_candidates(candidates)
+    candidates = _deduplicate_candidates(candidates)
     if not candidates:
         raise SystemExit(
             "No images found. Check --root, --layout, --splits, --real-names/--fake-names, "
@@ -104,7 +112,7 @@ def main() -> None:
         "task_type",
         "width",
         "height",
-        "sha256",
+        "md5",
     ]
     with output_path.open("w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(output_file, fieldnames=fieldnames)
@@ -122,7 +130,7 @@ def main() -> None:
                     "task_type": candidate.task_type,
                     "width": width,
                     "height": height,
-                    "sha256": _sha256(candidate.path) if args.hash else "",
+                    "md5": _md5(candidate.path),
                 }
             )
 
@@ -347,6 +355,25 @@ def _deduplicate_candidates(candidates: list[ManifestCandidate]) -> list[Manifes
     return candidates
 
 
+def _filter_verified_candidates(candidates: list[ManifestCandidate]) -> list[ManifestCandidate]:
+    verified_candidates: list[ManifestCandidate] = []
+    skipped: list[tuple[Path, Exception]] = []
+    for candidate in candidates:
+        try:
+            _verify_image(candidate.path)
+        except Exception as error:
+            skipped.append((candidate.path, error))
+            continue
+        verified_candidates.append(candidate)
+    if skipped:
+        print(f"Warning: skipped {len(skipped)} unloadable image(s).")
+        for image_path, error in skipped[:5]:
+            print(f"Warning: skipped {image_path}: {error}")
+        if len(skipped) > 5:
+            print(f"Warning: skipped {len(skipped) - 5} additional unloadable image(s).")
+    return verified_candidates
+
+
 def _resolve_layout(
     args: argparse.Namespace,
     root: Path,
@@ -460,8 +487,13 @@ def _dimensions(image_path: Path) -> tuple[int, int]:
         return image.size
 
 
-def _sha256(image_path: Path) -> str:
-    digest = hashlib.sha256()
+def _verify_image(image_path: Path) -> None:
+    with Image.open(image_path) as image:
+        image.load()
+
+
+def _md5(image_path: Path) -> str:
+    digest = hashlib.md5(usedforsecurity=False)
     with image_path.open("rb") as image_file:
         for chunk in iter(lambda: image_file.read(1024 * 1024), b""):
             digest.update(chunk)

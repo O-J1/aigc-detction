@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -160,6 +162,34 @@ sources:
         _run_builder(monkeypatch, spec_path, tmp_path / "manifest.csv")
 
 
+def test_manifest_builder_skips_unloadable_images_and_writes_md5(tmp_path, monkeypatch) -> None:
+    valid_image = _touch_image(tmp_path / "source" / "valid.jpg")
+    invalid_image = tmp_path / "source" / "invalid.jpg"
+    invalid_image.write_bytes(b"not an image")
+    spec_path = tmp_path / "hybrid_bad_image.yaml"
+    spec_path.write_text(
+        f"""
+root: {tmp_path.as_posix()}
+sources:
+  - path: source
+    label: real
+    split: train
+""",
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "manifest.csv"
+
+    _run_builder(monkeypatch, spec_path, output_path)
+
+    rows = _read_rows(output_path)
+    expected_md5 = hashlib.md5(valid_image.read_bytes(), usedforsecurity=False).hexdigest()
+
+    assert len(rows) == 1
+    assert _normalized_path(rows[0]) == valid_image.relative_to(tmp_path).as_posix()
+    assert rows[0]["md5"] == expected_md5
+    assert "sha256" not in rows[0]
+
+
 def _run_builder(monkeypatch, spec_path, output_path) -> None:
     monkeypatch.setattr(
         sys,
@@ -177,7 +207,7 @@ def _run_builder(monkeypatch, spec_path, output_path) -> None:
 
 def _touch_image(path):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"fake image bytes")
+    Image.new("RGB", (4, 4), color=(12, 34, 56)).save(path)
     return path
 
 

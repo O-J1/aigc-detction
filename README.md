@@ -18,12 +18,12 @@ path,label,split
 Recommended columns for the larger corpus:
 
 ```text
-source_tier,source_dataset,generator,task_type,width,height,sha256,group_id
+source_tier,source_dataset,generator,task_type,width,height,md5,group_id
 ```
 
 Labels may be numeric (`0`, `1`) or text (`real`, `fake`, `ai`, `generated`). Relative paths are resolved against `data.root_dir` when set, otherwise against the manifest directory.
 
-Dataset construction preflights each manifest image by loading it through the same RGB Pillow path used during training. Invalid images are skipped by default. To also remove those invalid files before training starts, set `data.delete_invalid_images: true`; this only deletes regular files with recognized image extensions, but it is still destructive and should only be used when the image files can be regenerated or are already backed up.
+Manifest construction preflights each discovered image by loading it with Pillow. Invalid or inaccessible images are skipped by default, and each emitted row includes an `md5` content hash used as the stable identity for static validation augmentation. Pass `--no-verify-images` only when you intentionally want to skip build-time image validation.
 
 Folder layouts can be converted with:
 
@@ -98,13 +98,63 @@ The emitted `split` column remains the source of truth. Forced train and validat
 
 ## Local Smoke Training
 
-The local configs are set to `facebook/dinov3-vitb16-pretrain-lvd1689m`. Set `data.train_manifest` and `data.val_manifest` before running against real data.
+The local config uses repeated independent copies of `facebook/dinov3-vitb16-pretrain-lvd1689m`. Set `data.train_manifest` and `data.val_manifest` before running against real data.
 
 ```powershell
-python scripts/train.py --config ./configs/local_smoke.yaml
+python scripts/train.py --config ./configs/local_train.yaml
 ```
 
-For a trainer-only check without Honfigs/ugging Face access, keep `model.use_dummy_backbone: true` in the smoke config.
+For a trainer-only check without Hugging Face access, set `model.use_dummy_backbone: true` in the local config.
+
+## Model Configuration
+
+Backbone slots are configured per stream. Use explicit `backbones` entries when each slot should load a different DINOv3 variant:
+
+```yaml
+model:
+  latent_dim: 1024
+  token_pooling: attention
+  stream_fusion: token_concat_attention
+  streams:
+    - name: stream1
+      backbones:
+        - model_name_or_path: facebook/dinov3-vits16-pretrain-lvd1689m
+          freeze: false
+        - model_name_or_path: facebook/dinov3-vits16plus-pretrain-lvd1689m
+          freeze: false
+        - model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
+          freeze: false
+        - model_name_or_path: facebook/dinov3-vitl16-pretrain-lvd1689m
+          freeze: false
+    - name: stream2
+      backbones:
+        - model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
+          freeze: false
+        - model_name_or_path: facebook/dinov3-vitl16-pretrain-lvd1689m
+          freeze: false
+```
+
+Use `repeat` plus `backbone` for the repeated-copy MICV interpretation:
+
+```yaml
+model:
+  latent_dim: 768
+  token_pooling: attention
+  stream_fusion: token_concat_attention
+  streams:
+    - name: stream1
+      repeat: 4
+      backbone:
+        model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
+        freeze: false
+    - name: stream2
+      repeat: 2
+      backbone:
+        model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
+        freeze: false
+```
+
+`stream_fusion: token_concat_attention` preserves the original token fusion path and requires matching token counts across slots. `stream_fusion: pooled_concat_mlp` pools each slot first, then concatenates pooled vectors, which is useful for mixed hidden sizes, different token layouts, or ConvNeXt-style experiments.
 
 ## 2 GPU Trial
 
@@ -119,9 +169,9 @@ The cluster profile uses `training.amp_dtype: bf16` for A100 mixed precision wit
 
 ## Guesses Chosen Where Unspecified
 
-- Feature aggregation: concatenate backbone pooled features inside each stream.
+- Feature aggregation: concatenate slot tokens by default, with an optional pool-first concatenation mode for heterogeneous committees.
 - Stream fusion: average sigmoid probabilities, matching the diagram.
 - Training loss: fused focal loss by default, with optional stream auxiliary losses.
-- Projection latent dimension: 512 locally, 1024 in the cluster profile.
+- Projection latent dimension: 768 in the repeated-copy local baseline, 1024 in the heterogeneous 2-GPU and cluster profiles.
 - SWA: final 2-3 epochs by default.
 - Validation: clean resize-only metric for model selection, optional static degraded validation for robustness reporting.

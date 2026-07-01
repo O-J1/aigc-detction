@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from types import UnionType
+from typing import Any, Mapping, Union, get_args, get_origin, get_type_hints
 
 import yaml
 
@@ -23,6 +24,14 @@ class BackboneSettings:
 
 
 @dataclass
+class StreamSettings:
+    name: str = ""
+    backbones: list[BackboneSettings] = field(default_factory=list)
+    repeat: int | None = None
+    backbone: BackboneSettings | None = None
+
+
+@dataclass
 class ModelSettings:
     use_dummy_backbone: bool = False
     dummy_feature_dim: int = 64
@@ -32,6 +41,8 @@ class ModelSettings:
     mlp_hidden_dims: list[int] = field(default_factory=lambda: [1024, 256])
     dropout: float = 0.2
     token_pooling: str = "attention"
+    stream_fusion: str = "token_concat_attention"
+    streams: list[StreamSettings] = field(default_factory=list)
     backbone: BackboneSettings = field(default_factory=BackboneSettings)
 
 
@@ -48,7 +59,6 @@ class DataSettings:
     pin_memory: bool = True
     persistent_workers: bool = True
     balanced_sampling: bool = True
-    delete_invalid_images: bool = False
 
 
 @dataclass
@@ -117,12 +127,65 @@ def load_config(config_path: str | Path) -> ExperimentConfig:
 
 
 def _update_dataclass(instance: Any, values: Mapping[str, Any]) -> None:
-    valid_fields = {field.name for field in fields(instance)}
+    valid_fields = {field.name: field for field in fields(instance)}
+    type_hints = get_type_hints(type(instance))
     for key, value in values.items():
         if key not in valid_fields:
             raise ValueError(f"Unknown config key for {type(instance).__name__}: {key}")
+        field_info = valid_fields[key]
+        annotation = type_hints.get(key, field_info.type)
         current_value = getattr(instance, key)
         if is_dataclass(current_value) and isinstance(value, Mapping):
             _update_dataclass(current_value, value)
         else:
-            setattr(instance, key, value)
+            setattr(instance, key, _coerce_config_value(annotation, value))
+
+
+def _coerce_config_value(annotation: Any, value: Any) -> Any:
+    if not isinstance(value, list):
+        if isinstance(value, Mapping):
+            dataclass_type = _dataclass_type(annotation)
+            if dataclass_type is not None:
+                return _build_dataclass(dataclass_type, value)
+        return value
+
+    origin = get_origin(annotation)
+    if origin is not list:
+        return value
+
+    (item_type,) = get_args(annotation) or (Any,)
+    dataclass_type = _dataclass_type(item_type)
+    if dataclass_type is None:
+        return value
+
+    return [
+        _build_dataclass(dataclass_type, item) if isinstance(item, Mapping) else item
+        for item in value
+    ]
+
+
+def _dataclass_type(annotation: Any) -> type[Any] | None:
+    if isinstance(annotation, type) and is_dataclass(annotation):
+        return annotation
+
+    origin = get_origin(annotation)
+    if origin not in {Union, UnionType}:
+        return None
+
+    for arg in get_args(annotation):
+        if isinstance(arg, type) and is_dataclass(arg):
+            return arg
+    return None
+
+
+def _build_dataclass(dataclass_type: type[Any], values: Mapping[str, Any]) -> Any:
+    init_values: dict[str, Any] = {}
+    for field_info in fields(dataclass_type):
+        if field_info.default is not MISSING:
+            init_values[field_info.name] = field_info.default
+        elif field_info.default_factory is not MISSING:
+            init_values[field_info.name] = field_info.default_factory()
+
+    instance = dataclass_type(**init_values)
+    _update_dataclass(instance, values)
+    return instance

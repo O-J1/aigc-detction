@@ -3,20 +3,58 @@ experiment_name: micv_cluster_32
 model:
   use_dummy_backbone: false
   dummy_feature_dim: 64
-  stream1_backbones: 4
-  stream2_backbones: 2
   latent_dim: 1024
   mlp_hidden_dims: [1024, 256]
   dropout: 0.2
   token_pooling: attention
-  backbone:
-    model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
-    trust_remote_code: true
-    gradient_checkpointing: true
-    freeze: false
-    output_mode: patch_tokens
-    include_cls_token: false
-    include_register_tokens: false
+  stream_fusion: token_concat_attention
+  streams:
+    - name: stream1
+      backbones:
+        - model_name_or_path: facebook/dinov3-vits16-pretrain-lvd1689m
+          trust_remote_code: true
+          gradient_checkpointing: true
+          freeze: false
+          output_mode: patch_tokens
+          include_cls_token: false
+          include_register_tokens: false
+        - model_name_or_path: facebook/dinov3-vits16plus-pretrain-lvd1689m
+          trust_remote_code: true
+          gradient_checkpointing: true
+          freeze: false
+          output_mode: patch_tokens
+          include_cls_token: false
+          include_register_tokens: false
+        - model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
+          trust_remote_code: true
+          gradient_checkpointing: true
+          freeze: false
+          output_mode: patch_tokens
+          include_cls_token: false
+          include_register_tokens: false
+        - model_name_or_path: facebook/dinov3-vitl16-pretrain-lvd1689m
+          trust_remote_code: true
+          gradient_checkpointing: true
+          freeze: false
+          output_mode: patch_tokens
+          include_cls_token: false
+          include_register_tokens: false
+    - name: stream2
+      backbones:
+        - model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
+          trust_remote_code: true
+          gradient_checkpointing: true
+          freeze: false
+          output_mode: patch_tokens
+          include_cls_token: false
+          include_register_tokens: false
+        - model_name_or_path: facebook/dinov3-vitl16-pretrain-lvd1689m
+          trust_remote_code: true
+          gradient_checkpointing: true
+          freeze: false
+          output_mode: patch_tokens
+          include_cls_token: false
+          include_register_tokens: false
 
 data:
   train_manifest: manifests/train.parquet

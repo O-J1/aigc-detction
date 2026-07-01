@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 import torch
@@ -21,16 +21,41 @@ from micv.data.transforms import (
 @dataclass
 class DummyRecord:
     path: str
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 def test_ntire_policy_uses_expected_train_and_val_operation_sets() -> None:
     train_policy = NTIREAugmentationPolicy(severity="train")
     val_policy = NTIREAugmentationPolicy(severity="val")
+    hard_policy = NTIREAugmentationPolicy(severity="hard")
 
-    assert train_policy._ops_for_group("compression") == ["jpeg"]
+    assert train_policy._ops_for_group("compression") == [
+        "jpeg",
+        "webp",
+        "avif",
+        "resize_then_codec",
+    ]
     assert "pixelation" not in train_policy._ops_for_group("geometry")
     assert "pixelation" in val_policy._ops_for_group("geometry")
-    assert set(AUG_GROUPS["watermark"]).isdisjoint(val_policy._ops_for_group("watermark"))
+    assert "subtle_watermark" in val_policy._ops_for_group("capture")
+    assert "print_scan" not in val_policy._ops_for_group("capture")
+    assert "print_scan" in hard_policy._ops_for_group("capture")
+    assert "watermark" not in AUG_GROUPS
+    assert all("proxy" not in op for ops in AUG_GROUPS.values() for op in ops)
+
+
+@pytest.mark.parametrize(
+    "op_name",
+    sorted({op for ops in AUG_GROUPS.values() for op in ops}),
+)
+def test_every_ntire_op_returns_rgb_and_preserves_size(op_name: str) -> None:
+    image = Image.new("RGB", (32, 24), color=(128, 64, 32))
+
+    random.seed(123)
+    result = ntire_transforms.apply_op(op_name, image, severity="hard")
+
+    assert result.mode == "RGB"
+    assert result.size == image.size
 
 
 def test_build_train_transform_uses_pre_and_post_resize_ntire_policies() -> None:
@@ -48,18 +73,19 @@ def test_build_train_transform_uses_pre_and_post_resize_ntire_policies() -> None
     )
 
 
-def test_static_validation_transform_is_path_seeded_and_restores_random_state() -> None:
+def test_static_validation_transform_is_md5_seeded_and_restores_random_state() -> None:
     image = Image.new("RGB", (24, 24), color=(128, 64, 32))
-    record = DummyRecord(path="example/path.png")
+    first_record = DummyRecord(path="/machine-a/example/path.png", metadata={"md5": "abc123"})
+    second_record = DummyRecord(path="/machine-b/moved/path.png", metadata={"md5": "abc123"})
     transform = build_eval_transform(image_size=16, static_augmentation=True)
 
     random.seed(123)
     expected_next_random = random.random()
     random.seed(123)
-    first = transform(image, record)
+    first = transform(image, first_record)
     next_random = random.random()
     random.seed(999)
-    second = transform(image, record)
+    second = transform(image, second_record)
 
     assert getattr(transform, "needs_record", False)
     assert torch.equal(first, second)
