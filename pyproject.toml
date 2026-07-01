@@ -19,8 +19,7 @@ dependencies = [
     "torch>=2.12.1",
     "torchvision>=0.27.1",
     "pillow-heif",
-    "pillow-jxl-plugin",
-    "ruff==0.15.20"
+    "pillow-jxl-plugin"
 ]
 
 [tool.uv.sources]
