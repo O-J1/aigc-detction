@@ -46,6 +46,7 @@ def main() -> None:
         split=config.data.val_split,
         root_dir=config.data.root_dir,
         transform=eval_transform,
+        bad_image_policy=config.data.bad_image_policy,
     )
     data_loader = DataLoader(
         dataset,

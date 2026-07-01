@@ -42,6 +42,39 @@ augmentation:
     assert config.augmentation.static_val_augmentation is True
     assert config.augmentation.clean_prob == 0.30
     assert config.augmentation.max_ops == 5
+    assert config.augmentation.pre_crop.clean_prob == 0.60
+    assert config.augmentation.post_crop is None
+
+
+def test_load_config_accepts_explicit_train_policy_stages_and_bad_image_policy(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+data:
+  bad_image_policy: zero
+augmentation:
+  pre_crop:
+    enabled: false
+  post_crop:
+    enabled: true
+    clean_prob: 0.15
+    max_ops: 4
+    severity: mixed
+    op_pool: all
+    intensity: hard
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.data.bad_image_policy == "zero"
+    assert config.augmentation.pre_crop.enabled is False
+    assert config.augmentation.post_crop is not None
+    assert config.augmentation.post_crop.clean_prob == 0.15
+    assert config.augmentation.post_crop.max_ops == 4
+    assert config.augmentation.post_crop.op_pool == "all"
+    assert config.augmentation.post_crop.intensity == "hard"
 
 
 def test_load_config_accepts_stream_backbone_settings(tmp_path) -> None:

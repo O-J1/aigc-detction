@@ -79,6 +79,26 @@ def test_micv_dummy_backbone_accepts_repeat_stream_backbone() -> None:
     assert len({id(slot) for slot in slots}) == 6
 
 
+def test_micv_from_config_rejects_invalid_stream_fusion() -> None:
+    with pytest.raises(ValueError, match="Unsupported stream_fusion"):
+        MICVDualStreamEnsemble.from_config(
+            {
+                "use_dummy_backbone": True,
+                "stream_fusion": "unsupported",
+            }
+        )
+
+
+def test_micv_from_config_rejects_invalid_token_pooling() -> None:
+    with pytest.raises(ValueError, match="Unsupported token_pooling"):
+        MICVDualStreamEnsemble.from_config(
+            {
+                "use_dummy_backbone": True,
+                "token_pooling": "unsupported",
+            }
+        )
+
+
 def test_pooled_concat_mlp_allows_mismatched_token_counts_and_dims() -> None:
     stream = MICVStream(
         backbone_factories=(

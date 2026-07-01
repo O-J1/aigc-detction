@@ -12,6 +12,7 @@ from micv.data.transforms import (
     AUG_GROUPS,
     NTIREAugmentationPolicy,
     StaticNTIREValidationPolicy,
+    TransformPolicyStage,
     build_eval_transform,
     build_train_transform,
 )
@@ -28,5 +29,6 @@ __all__ = [
     "make_weighted_sampler",
     "NTIREAugmentationPolicy",
     "StaticNTIREValidationPolicy",
+    "TransformPolicyStage",
     "verify_image",
 ]

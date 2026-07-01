@@ -1,329 +1,49 @@
 from __future__ import annotations
 
-import hashlib
+import importlib
 import io
 import random
-from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-import pillow_jxl # noqa: F401
-from pillow_heif import register_heif_opener
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
-from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as transform_functional
 
-register_heif_opener()
+from micv.transforms.builders import TransformPolicyStage, build_eval_transform, build_train_transform
+from micv.transforms.compose import RecordAwareCompose
+from micv.transforms.defaults import DEFAULT_MEAN, DEFAULT_STD
+from micv.transforms.identity import record_seed_identity as _record_seed_identity
+from micv.transforms.identity import stable_int_hash
+from micv.transforms.policies import NTIREAugmentationPolicy, StaticNTIREValidationPolicy
+from micv.transforms.registry import AUG_GROUPS, OPERATIONS, TRAIN_OPS, VAL_EXTRA_OPS, Operation, apply_op
+from micv.transforms.severity import normalize_severity as _normalize_severity
+from micv.transforms.severity import sample_effective_severity as _sample_effective_severity
 
-DEFAULT_MEAN = (0.485, 0.456, 0.406)
-DEFAULT_STD = (0.229, 0.224, 0.225)
+__all__ = [
+    "AUG_GROUPS",
+    "DEFAULT_MEAN",
+    "DEFAULT_STD",
+    "NTIREAugmentationPolicy",
+    "OPERATIONS",
+    "Operation",
+    "RecordAwareCompose",
+    "StaticNTIREValidationPolicy",
+    "TRAIN_OPS",
+    "TransformPolicyStage",
+    "VAL_EXTRA_OPS",
+    "_normalize_severity",
+    "_record_seed_identity",
+    "_sample_effective_severity",
+    "apply_op",
+    "build_eval_transform",
+    "build_train_transform",
+    "stable_int_hash",
+]
 
-AUG_GROUPS = {
-    "blur": [
-        "gaussian_blur",
-        "lens_blur",
-        "motion_blur",
-        "glass_blur",
-    ],
-    "compression": [
-        "jpeg",
-        "jpeg2000",
-        "webp",
-        "avif",
-        "jxl",
-        "multi_jpeg",
-        "multi_codec",
-        "jpeg_then_jpeg2000",
-        "resize_then_codec",
-        "platform_recompress",
-    ],
-    "noise": [
-        "white_noise",
-        "impulse_noise",
-        "multiplicative_noise",
-        "iso_noise",
-        "shot_noise",
-    ],
-    "color_tone": [
-        "color_shift",
-        "color_saturation",
-        "brightness_up",
-        "brightness_down",
-        "color_jitter",
-        "color_quantization",
-        "linear_contrast",
-        "rgb_channel_shift",
-        "random_tone_curve",
-        "clahe",
-    ],
-    "geometry": [
-        "random_crop",
-        "random_aspect_crop",
-        "downscale",
-        "pixelation",
-        "perspective",
-        "letterbox_pad",
-    ],
-    "capture": [
-        "screenshot_resample",
-        "subtle_watermark",
-        "print_scan",
-        "camera_screen_photo",
-    ],
-}
-
-TRAIN_OPS = {
-    "gaussian_blur",
-    "lens_blur",
-    "color_shift",
-    "color_saturation",
-    "jpeg",
-    "webp",
-    "avif",
-    "resize_then_codec",
-    "white_noise",
-    "impulse_noise",
-    "brightness_up",
-    "brightness_down",
-    "color_jitter",
-    "color_quantization",
-    "linear_contrast",
-}
-
-VAL_EXTRA_OPS = {
-    "motion_blur",
-    "multiplicative_noise",
-    "pixelation",
-    "rgb_channel_shift",
-    "random_crop",
-    "random_aspect_crop",
-    "downscale",
-    "jpeg2000",
-    "jxl",
-    "multi_jpeg",
-    "multi_codec",
-    "jpeg_then_jpeg2000",
-    "platform_recompress",
-    "screenshot_resample",
-    "letterbox_pad",
-    "subtle_watermark",
-    "camera_screen_photo",
-}
-
-
-@dataclass
-class NTIREAugmentationPolicy:
-    clean_prob: float = 0.30
-    max_ops: int = 5
-    severity: str = "mixed"
-
-    def __call__(self, image: Image.Image) -> Image.Image:
-        if self.severity in {"none", "off", "disabled"} or random.random() < self.clean_prob:
-            return image
-        available_groups = [group for group in AUG_GROUPS if self._ops_for_group(group)]
-        if not available_groups:
-            return image
-        num_ops = random.randint(1, max(1, self.max_ops))
-        groups = random.sample(available_groups, k=min(num_ops, len(available_groups)))
-        out = image.convert("RGB")
-        for group in groups:
-            effective_severity = _sample_effective_severity(self.severity)
-            ops = self._ops_for_group(group, severity_override=effective_severity)
-            if not ops:
-                continue
-            op_name = random.choice(ops)
-            out = apply_op(op_name, out, severity=effective_severity)
-        return out
-
-    def _ops_for_group(
-        self,
-        group: str,
-        severity_override: str | None = None,
-    ) -> list[str]:
-        ops = AUG_GROUPS[group]
-        normalized_severity = _normalize_severity(severity_override or self.severity)
-        if normalized_severity == "train":
-            return [op for op in ops if op in TRAIN_OPS]
-        if normalized_severity == "val":
-            return [op for op in ops if op in VAL_EXTRA_OPS or self._is_train_op(op)]
-        return ops
-
-    @staticmethod
-    def _is_train_op(op: str) -> bool:
-        return op in TRAIN_OPS
-
-
-class StaticNTIREValidationPolicy:
-    needs_record = True
-
-    def __init__(self, policy_version: str = "val_hard_v1") -> None:
-        self.policy_version = policy_version
-
-    def __call__(self, image: Image.Image, record: Any) -> Image.Image:
-        seed = stable_int_hash(f"{self.policy_version}:{_record_seed_identity(record)}")
-        state = random.getstate()
-        try:
-            random.seed(seed)
-            return NTIREAugmentationPolicy(
-                clean_prob=0.0,
-                max_ops=random.randint(1, 5),
-                severity="hard",
-            )(image)
-        finally:
-            random.setstate(state)
-
-
-class RecordAwareCompose:
-    needs_record = True
-
-    def __init__(self, transform_steps: Sequence[object]) -> None:
-        self.transforms: list[Any] = list(transform_steps)
-
-    def __call__(self, image: Image.Image, record: Any) -> Any:
-        out: Any = image
-        for transform in self.transforms:
-            if getattr(transform, "needs_record", False):
-                out = transform(out, record)
-            else:
-                out = transform(out)
-        return out
-
-
-def build_train_transform(
-    image_size: int = 512,
-    difficulty: str = "mixed",
-    clean_prob: float = 0.30,
-    max_ops: int = 5,
-    mean: Sequence[float] = DEFAULT_MEAN,
-    std: Sequence[float] = DEFAULT_STD,
-) -> transforms.Compose:
-    return transforms.Compose(
-        [
-            NTIREAugmentationPolicy(clean_prob=0.60, max_ops=2, severity="train"),
-            transforms.RandomResizedCrop(
-                image_size,
-                scale=(0.65, 1.0),
-                ratio=(0.75, 1.333),
-                interpolation=InterpolationMode.BICUBIC,
-                antialias=True,
-            ),
-            NTIREAugmentationPolicy(clean_prob=clean_prob, max_ops=max_ops, severity=difficulty),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std),
-        ]
-    )
-
-
-def build_eval_transform(
-    image_size: int = 512,
-    mean: Sequence[float] = DEFAULT_MEAN,
-    std: Sequence[float] = DEFAULT_STD,
-    static_augmentation: bool = False,
-) -> transforms.Compose | RecordAwareCompose:
-    transform_steps: list[object] = []
-    if static_augmentation:
-        transform_steps.append(StaticNTIREValidationPolicy())
-    transform_steps.extend(
-        [
-            transforms.Resize(
-                (image_size, image_size),
-                interpolation=InterpolationMode.BICUBIC,
-                antialias=True,
-            ),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std),
-        ]
-    )
-    if static_augmentation:
-        return RecordAwareCompose(transform_steps)
-    return transforms.Compose(transform_steps)
-
-
-def stable_int_hash(value: str) -> int:
-    digest = hashlib.md5(value.encode("utf-8"), usedforsecurity=False).digest()
-    return int.from_bytes(digest[:8], byteorder="big", signed=False)
-
-
-def _record_seed_identity(record: Any) -> str:
-    metadata = getattr(record, "metadata", {})
-    if isinstance(metadata, dict):
-        for key in ("md5", "group_id", "manifest_path"):
-            value = metadata.get(key)
-            if value not in {None, ""}:
-                return f"{key}:{value}"
-    return f"path:{getattr(record, 'path')}"
-
-
-def apply_op(op_name: str, image: Image.Image, severity: str = "mixed") -> Image.Image:
-    effective_severity = _sample_effective_severity(severity)
-    operations = {
-        "gaussian_blur": _gaussian_blur,
-        "lens_blur": _lens_blur,
-        "motion_blur": _motion_blur,
-        "glass_blur": _glass_blur,
-        "jpeg": _jpeg,
-        "jpeg2000": _jpeg2000,
-        "webp": _webp,
-        "avif": _avif,
-        "jxl": _jxl,
-        "multi_jpeg": _multi_jpeg,
-        "multi_codec": _multi_codec,
-        "jpeg_then_jpeg2000": _jpeg_then_jpeg2000,
-        "resize_then_codec": _resize_then_codec,
-        "platform_recompress": _platform_recompress,
-        "white_noise": _white_noise,
-        "impulse_noise": _impulse_noise,
-        "multiplicative_noise": _multiplicative_noise,
-        "iso_noise": _iso_noise,
-        "shot_noise": _shot_noise,
-        "color_shift": _color_shift,
-        "color_saturation": _color_saturation,
-        "brightness_up": _brightness_up,
-        "brightness_down": _brightness_down,
-        "color_jitter": _color_jitter,
-        "color_quantization": _color_quantization,
-        "linear_contrast": _linear_contrast,
-        "rgb_channel_shift": _rgb_channel_shift,
-        "random_tone_curve": _random_tone_curve,
-        "clahe": _clahe,
-        "random_crop": _random_crop,
-        "random_aspect_crop": _random_aspect_crop,
-        "downscale": _downscale,
-        "pixelation": _pixelation,
-        "perspective": _perspective,
-        "screenshot_resample": _screenshot_resample,
-        "letterbox_pad": _letterbox_pad,
-        "subtle_watermark": _subtle_watermark,
-        "print_scan": _print_scan,
-        "camera_screen_photo": _camera_screen_photo,
-    }
-    try:
-        return operations[op_name](image.convert("RGB"), effective_severity)
-    except KeyError as error:
-        raise ValueError(f"Unknown augmentation operation: {op_name}") from error
-
-
-def _normalize_severity(severity: str) -> str:
-    severity_aliases = {
-        "easy": "train",
-        "medium": "val",
-        "none": "none",
-        "off": "none",
-        "disabled": "none",
-    }
-    return severity_aliases.get(severity, severity)
-
-
-def _sample_effective_severity(severity: str) -> str:
-    normalized_severity = _normalize_severity(severity)
-    if normalized_severity == "mixed":
-        return random.choices(["train", "val", "hard"], weights=[0.4, 0.35, 0.25], k=1)[0]
-    if normalized_severity == "test":
-        return "hard"
-    return normalized_severity
+_HEIF_REGISTERED = False
+_HEIF_REGISTER_ATTEMPTED = False
+_JXL_IMPORT_ATTEMPTED = False
 
 
 def _pick(severity: str, train: float, val: float, hard: float) -> float:
@@ -554,8 +274,30 @@ def _save_reopen(image: Image.Image, image_format: str, **save_kwargs: Any) -> I
 
 
 def _pil_can_save(image_format: str) -> bool:
+    _ensure_codec_registered(image_format)
     Image.init()
     return image_format.upper() in Image.SAVE
+
+
+def _ensure_codec_registered(image_format: str) -> None:
+    global _HEIF_REGISTERED, _HEIF_REGISTER_ATTEMPTED, _JXL_IMPORT_ATTEMPTED
+
+    normalized_format = image_format.upper()
+    if normalized_format in {"AVIF", "HEIF"} and not _HEIF_REGISTER_ATTEMPTED:
+        _HEIF_REGISTER_ATTEMPTED = True
+        try:
+            pillow_heif = importlib.import_module("pillow_heif")
+        except ImportError:
+            return
+        pillow_heif.register_heif_opener()
+        _HEIF_REGISTERED = True
+
+    if normalized_format == "JXL" and not _JXL_IMPORT_ATTEMPTED:
+        _JXL_IMPORT_ATTEMPTED = True
+        try:
+            importlib.import_module("pillow_jxl")
+        except ImportError:
+            return
 
 
 def _save_reopen_or_none(
@@ -1637,3 +1379,46 @@ def _camera_screen_photo_with_profile(
     out = _screen_jpeg_output_profiled(out, profile)
 
     return out.convert("RGB")
+
+
+OPERATIONS.update({
+    "gaussian_blur": _gaussian_blur,
+    "lens_blur": _lens_blur,
+    "motion_blur": _motion_blur,
+    "glass_blur": _glass_blur,
+    "jpeg": _jpeg,
+    "jpeg2000": _jpeg2000,
+    "webp": _webp,
+    "avif": _avif,
+    "jxl": _jxl,
+    "multi_jpeg": _multi_jpeg,
+    "multi_codec": _multi_codec,
+    "jpeg_then_jpeg2000": _jpeg_then_jpeg2000,
+    "resize_then_codec": _resize_then_codec,
+    "platform_recompress": _platform_recompress,
+    "white_noise": _white_noise,
+    "impulse_noise": _impulse_noise,
+    "multiplicative_noise": _multiplicative_noise,
+    "iso_noise": _iso_noise,
+    "shot_noise": _shot_noise,
+    "color_shift": _color_shift,
+    "color_saturation": _color_saturation,
+    "brightness_up": _brightness_up,
+    "brightness_down": _brightness_down,
+    "color_jitter": _color_jitter,
+    "color_quantization": _color_quantization,
+    "linear_contrast": _linear_contrast,
+    "rgb_channel_shift": _rgb_channel_shift,
+    "random_tone_curve": _random_tone_curve,
+    "clahe": _clahe,
+    "random_crop": _random_crop,
+    "random_aspect_crop": _random_aspect_crop,
+    "downscale": _downscale,
+    "pixelation": _pixelation,
+    "perspective": _perspective,
+    "screenshot_resample": _screenshot_resample,
+    "letterbox_pad": _letterbox_pad,
+    "subtle_watermark": _subtle_watermark,
+    "print_scan": _print_scan,
+    "camera_screen_photo": _camera_screen_photo,
+})

@@ -80,10 +80,17 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
             raise ValueError(f"Unsupported manifest format: {self.manifest_path.suffix}")
 
         records: list[ManifestRecord] = []
-        for row in rows:
-            row_split = row.get("split")
-            if split is not None and row_split not in {None, ""} and row_split != split:
-                continue
+        for row_number, row in enumerate(rows, start=2):
+            row_split = _normalize_split_value(row.get("split"))
+            if split is not None:
+                if row_split is None:
+                    manifest_path = row.get("path", "<missing path>")
+                    raise ValueError(
+                        f"Manifest row {row_number} in {self.manifest_path} is missing split "
+                        f"for requested split={split!r}: {manifest_path}"
+                    )
+                if row_split != split:
+                    continue
             if "path" not in row:
                 raise ValueError("Manifest rows must include a path column.")
             if self.require_label and "label" not in row:
@@ -158,6 +165,15 @@ def normalize_label(value: Any) -> int:
     if normalized in {"1", "fake", "ai", "aigc", "generated", "synthetic", "positive"}:
         return 1
     raise ValueError(f"Unsupported label value: {value!r}")
+
+
+def _normalize_split_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    split = str(value).strip()
+    return split or None
 
 
 class DistributedWeightedSampler(Sampler[int]):

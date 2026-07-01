@@ -74,3 +74,50 @@ def test_manifest_dataset_passes_record_to_record_aware_transform(tmp_path) -> N
 
     assert transform.seen_path == image_path
     assert transform.seen_metadata == {"split": "val", "md5": "abc123", "manifest_path": image_path.name}
+
+
+def test_manifest_dataset_excludes_other_named_splits(tmp_path) -> None:
+    train_path = tmp_path / "train.png"
+    val_path = tmp_path / "val.png"
+    manifest_path = tmp_path / "manifest.csv"
+    Image.new("RGB", (4, 4), color=(255, 0, 0)).save(train_path)
+    Image.new("RGB", (4, 4), color=(0, 255, 0)).save(val_path)
+    manifest_path.write_text(
+        "path,label,split\n"
+        f"{train_path.name},0,train\n"
+        f"{val_path.name},1,val\n",
+        encoding="utf-8",
+    )
+
+    dataset = AIGCManifestDataset(manifest_path, split="val")
+
+    assert len(dataset) == 1
+    assert dataset.records[0].path == val_path
+
+
+def test_manifest_dataset_rejects_blank_split_when_split_requested(tmp_path) -> None:
+    image_path = tmp_path / "image.png"
+    manifest_path = tmp_path / "manifest.csv"
+    Image.new("RGB", (4, 4), color=(255, 0, 0)).save(image_path)
+    manifest_path.write_text(
+        "path,label,split\n"
+        f"{image_path.name},0,\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="missing split"):
+        AIGCManifestDataset(manifest_path, split="train")
+
+
+def test_manifest_dataset_rejects_missing_split_column_when_split_requested(tmp_path) -> None:
+    image_path = tmp_path / "image.png"
+    manifest_path = tmp_path / "manifest.csv"
+    Image.new("RGB", (4, 4), color=(255, 0, 0)).save(image_path)
+    manifest_path.write_text(
+        "path,label\n"
+        f"{image_path.name},0\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="missing split"):
+        AIGCManifestDataset(manifest_path, split="train")

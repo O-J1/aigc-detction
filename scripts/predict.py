@@ -76,6 +76,7 @@ def main() -> None:
             split=None,
             root_dir=config.data.root_dir,
             transform=eval_transform,
+            bad_image_policy=config.data.bad_image_policy,
             require_label=False,
         )
         has_ground_truth = _has_manifest_ground_truth(dataset)

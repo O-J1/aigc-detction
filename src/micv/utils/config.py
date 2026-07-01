@@ -59,6 +59,17 @@ class DataSettings:
     pin_memory: bool = True
     persistent_workers: bool = True
     balanced_sampling: bool = True
+    bad_image_policy: str = "raise"
+
+
+@dataclass
+class AugmentationStageSettings:
+    enabled: bool = True
+    clean_prob: float = 0.30
+    max_ops: int = 5
+    severity: str = "mixed"
+    op_pool: str | None = None
+    intensity: str | None = None
 
 
 @dataclass
@@ -67,6 +78,14 @@ class AugmentationSettings:
     static_val_augmentation: bool = True
     clean_prob: float = 0.30
     max_ops: int = 5
+    pre_crop: AugmentationStageSettings = field(
+        default_factory=lambda: AugmentationStageSettings(
+            clean_prob=0.60,
+            max_ops=2,
+            severity="train",
+        )
+    )
+    post_crop: AugmentationStageSettings | None = None
     mean: list[float] = field(default_factory=lambda: [0.485, 0.456, 0.406])
     std: list[float] = field(default_factory=lambda: [0.229, 0.224, 0.225])
 

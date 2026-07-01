@@ -9,9 +9,11 @@ from PIL import Image
 from torchvision import transforms
 
 import micv.data.transforms as ntire_transforms
+from micv.transforms import TransformPolicyStage
 from micv.data.transforms import (
     AUG_GROUPS,
     NTIREAugmentationPolicy,
+    RecordAwareCompose,
     StaticNTIREValidationPolicy,
     build_eval_transform,
     build_train_transform,
@@ -44,6 +46,14 @@ def test_ntire_policy_uses_expected_train_and_val_operation_sets() -> None:
     assert all("proxy" not in op for ops in AUG_GROUPS.values() for op in ops)
 
 
+def test_all_policy_ops_are_registered() -> None:
+    policy_ops = ntire_transforms.TRAIN_OPS | ntire_transforms.VAL_EXTRA_OPS
+    grouped_ops = {op for ops in AUG_GROUPS.values() for op in ops}
+
+    assert policy_ops <= ntire_transforms.OPERATIONS.keys()
+    assert grouped_ops <= ntire_transforms.OPERATIONS.keys()
+
+
 @pytest.mark.parametrize(
     "op_name",
     sorted({op for ops in AUG_GROUPS.values() for op in ops}),
@@ -73,11 +83,43 @@ def test_build_train_transform_uses_pre_and_post_resize_ntire_policies() -> None
     )
 
 
+def test_build_train_transform_accepts_configurable_pre_and_post_crop_policies() -> None:
+    transform = build_train_transform(
+        image_size=32,
+        pre_crop=TransformPolicyStage(enabled=False),
+        post_crop=TransformPolicyStage(
+            clean_prob=0.10,
+            max_ops=4,
+            severity="mixed",
+            op_pool="all",
+            intensity="hard",
+        ),
+    )
+
+    policies = [step for step in transform.transforms if isinstance(step, NTIREAugmentationPolicy)]
+
+    assert isinstance(transform.transforms[0], transforms.RandomResizedCrop)
+    assert len(policies) == 1
+    assert policies[0].clean_prob == 0.10
+    assert policies[0].max_ops == 4
+    assert policies[0].op_pool == "all"
+    assert policies[0].intensity == "hard"
+
+
+def test_ntire_policy_separates_operation_pool_from_intensity(monkeypatch) -> None:
+    policy = NTIREAugmentationPolicy(op_pool="train", intensity="hard")
+
+    monkeypatch.setattr(ntire_transforms, "AUG_GROUPS", {"geometry": ["random_crop", "pixelation"]})
+
+    assert policy._ops_for_group("geometry", severity_override="hard") == []
+
+
 def test_static_validation_transform_is_md5_seeded_and_restores_random_state() -> None:
     image = Image.new("RGB", (24, 24), color=(128, 64, 32))
     first_record = DummyRecord(path="/machine-a/example/path.png", metadata={"md5": "abc123"})
     second_record = DummyRecord(path="/machine-b/moved/path.png", metadata={"md5": "abc123"})
     transform = build_eval_transform(image_size=16, static_augmentation=True)
+    assert isinstance(transform, RecordAwareCompose)
 
     random.seed(123)
     expected_next_random = random.random()
@@ -118,6 +160,7 @@ def test_static_validation_transform_handles_hard_motion_blur_and_restores_rando
     image = Image.new("RGB", (24, 24), color=(128, 64, 32))
     record = DummyRecord(path="example/path.png")
     transform = build_eval_transform(image_size=16, static_augmentation=True)
+    assert isinstance(transform, RecordAwareCompose)
 
     def choose_motion_blur_or_direction(choices):
         if choices == ["motion_blur"]:

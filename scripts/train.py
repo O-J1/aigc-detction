@@ -56,6 +56,8 @@ def main() -> None:
         max_ops=config.augmentation.max_ops,
         mean=config.augmentation.mean,
         std=config.augmentation.std,
+        pre_crop=config.augmentation.pre_crop,
+        post_crop=config.augmentation.post_crop,
     )
     eval_transform = build_eval_transform(
         image_size=config.data.image_size,
@@ -69,6 +71,7 @@ def main() -> None:
         split=config.data.train_split,
         root_dir=config.data.root_dir,
         transform=train_transform,
+        bad_image_policy=config.data.bad_image_policy,
     )
     val_dataset = None
     if config.data.val_manifest is not None:
@@ -77,6 +80,7 @@ def main() -> None:
             split=config.data.val_split,
             root_dir=config.data.root_dir,
             transform=eval_transform,
+            bad_image_policy=config.data.bad_image_policy,
         )
 
     if is_distributed() and config.data.balanced_sampling:

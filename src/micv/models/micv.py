@@ -21,6 +21,9 @@ from micv.models.heads import (
 
 BackboneFactory = Callable[[], nn.Module]
 
+SUPPORTED_STREAM_FUSION_MODES = {"token_concat_attention", "pooled_concat_mlp"}
+SUPPORTED_TOKEN_POOLING_MODES = {"attention", "mean"}
+
 
 @dataclass(frozen=True)
 class ResolvedStreamConfig:
@@ -129,6 +132,7 @@ class MICVDualStreamEnsemble(nn.Module):
 
     @classmethod
     def from_config(cls, model_config: Mapping[str, Any]) -> "MICVDualStreamEnsemble":
+        _validate_model_options(model_config)
         use_dummy_backbone = bool(model_config.get("use_dummy_backbone", False))
         stream_configs = _resolve_stream_configs(
             model_config,
@@ -166,6 +170,18 @@ class MICVDualStreamEnsemble(nn.Module):
             self.output_keys.stream2_prob: stream2_prob,
             self.output_keys.fused_prob: fused_prob,
         }
+
+
+def _validate_model_options(model_config: Mapping[str, Any]) -> None:
+    stream_fusion = str(model_config.get("stream_fusion", "token_concat_attention"))
+    if stream_fusion not in SUPPORTED_STREAM_FUSION_MODES:
+        supported = ", ".join(sorted(SUPPORTED_STREAM_FUSION_MODES))
+        raise ValueError(f"Unsupported stream_fusion={stream_fusion!r}. Supported modes: {supported}")
+
+    token_pooling = str(model_config.get("token_pooling", "attention"))
+    if token_pooling not in SUPPORTED_TOKEN_POOLING_MODES:
+        supported = ", ".join(sorted(SUPPORTED_TOKEN_POOLING_MODES))
+        raise ValueError(f"Unsupported token_pooling={token_pooling!r}. Supported modes: {supported}")
 
 
 def _resolve_stream_configs(
