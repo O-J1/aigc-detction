@@ -15,175 +15,119 @@ The original authors have not released code or model weights. This implementatio
 
 ## Installation
 
-Clone this repository, then create a virtual environment and activate it. Then install `databuilder` in editable mode (its needed for balancing and filtering data):
+Clone this repository, create and activate a virtual environment, The `large-data` extra is required for Parquet manifests.
 
-```py
+```powershell
 python -m pip install --upgrade pip
-python -m pip install -e "databuilder[embed,viz] @ git+https://github.com/O-J1/databuilder.git"
+python -m pip install -e ".[large-data]"
 ```
 
-
-## Data Manifest
-
-Use Parquet for large data, CSV is supported for testing reasons. Required columns:
-
-```text
-path,label,split
-```
-
-Recommended columns for the larger corpus:
-
-```text
-source_tier,source_dataset,generator,task_type,width,height,md5,group_id
-```
-
-Labels may be numeric (`0`, `1`) or text (`real`, `fake`, `ai`, `generated`). Relative paths are resolved against `data.root_dir` when set, otherwise against the manifest directory.
-
-Manifest construction preflights each discovered image by loading it with Pillow. Invalid or inaccessible images are skipped by default, and each emitted row includes an `md5` content hash used as the stable identity for static validation augmentation. Pass `--no-verify-images` only when you intentionally want to skip build-time image validation.
-
-Folder layouts can be converted with:
+Dataset construction is handled by the separate
+[`databuilder`](https://github.com/O-J1/databuilder) repository. Install it from
+source in the same environment:
 
 ```powershell
-python scripts/build_manifest.py --root D:\datasets\micv --output manifests/train.csv
+git clone https://github.com/O-J1/databuilder.git ..\databuilder
+python -m pip install -e "..\databuilder[embed,viz]"
 ```
 
-The builder auto-detects these common layouts:
+## Prepare the Data
 
-```text
-root/train/real        root/real/train       root/real
-root/train/fake        root/fake/train       root/fake
-root/val/real          root/real/val
-root/val/fake          root/fake/val
-```
-
-You can also point at explicit directories:
+Use `databuilder` to download or scan sources, filter invalid images, deduplicate,
+embed, cluster, balance, and assign splits. Start from its example TOML, edit the
+dataset entries and paths, then run a dry run before the real build:
 
 ```powershell
-python scripts/build_manifest.py `
-	--root D:\datasets\micv `
-	--real-dirs D:\data\photos_real `
-	--fake-dirs D:\data\generated_a D:\data\generated_b `
-	--binary-split train `
-	--output manifests/train.csv
+Copy-Item ..\databuilder\examples\build.example.toml .\build.toml
+databuilder run --config .\build.toml --dry-run
+databuilder run --config .\build.toml
 ```
 
-Use `--layout split-class`, `--layout class-split`, or `--layout binary-dirs` when auto-detection is not specific enough. Use `--real-names` and `--fake-names` if your folders are named differently.
+The final manifest is written to
+`<work_dir>/artifacts/manifest/manifest.parquet` (and optionally CSV). See the
+[`databuilder` documentation](https://github.com/O-J1/databuilder#readme) for local
+sources, Hugging Face sources, filtering, balancing, distributed runs, and the
+viewer.
 
-For mixed sources where some folders must stay in a specific split and other folders should be randomly split, use a hybrid YAML spec:
+The detector accepts CSV and Parquet manifests. Training and evaluation require
+`path`, `label`, and `split` columns. Labels may be `0`/`1` or names such as
+`real`, `fake`, `ai`, and `generated`. Relative image paths resolve against
+`data.root_dir`, or against the manifest's directory when `root_dir` is unset.
+
+For a quick folder-to-CSV conversion without the full data pipeline, the legacy
+helper remains available:
+
+```powershell
+python scripts/build_manifest.py --root D:\datasets\micv --output manifests\train.csv
+```
+
+## Configure and Train
+
+The checked-in configs are templates; their manifest paths are not bundled data.
+Set the following fields before training:
 
 ```yaml
-root: D:/datasets/micv
-seed: 42
-random_train_fraction: 0.8
-random_split_unit: leaf-folder
-sources:
-  - path: heldout_real
-    label: real
-    split: val
-    source_dataset: heldout_real
-  - path: heldout_fake
-    label: fake
-    split: val
-    generator: heldout_generator
-    source_dataset: heldout_fake
-  - path: training_real
-    label: real
-    split: train
-    keep_percent: 100
-    min_per_leaf_folder: 1
-  - path: pooled_real
-    label: real
-    split: random
-    keep_percent: 25
-    min_per_leaf_folder: 1
-  - path: pooled_fake
-    label: fake
-    split: random
-    generator: mixed_local_aigc
-    keep_percent: 50
-    min_per_leaf_folder: 1
+data:
+  train_manifest: D:/datasets/micv/work/artifacts/manifest/manifest.parquet
+  val_manifest: D:/datasets/micv/work/artifacts/manifest/manifest.parquet
+  root_dir: null
+  train_split: train
+  val_split: val
 ```
 
-Build the combined manifest with:
+Train or resume from a checkpoint:
 
 ```powershell
-python scripts/build_manifest.py --spec manifests/hybrid.yaml --output manifests/hybrid.csv
+python scripts/train.py --config configs/local_train.yaml
+python scripts/train.py --config configs/local_train.yaml --resume outputs/local_train/latest.pt
 ```
 
-The emitted `split` column remains the source of truth. Forced train and validation sources are written directly to those splits; random sources are shuffled with the configured seed and assigned to `train` or `val`. Use `random_split_unit: leaf-folder` when folders contain related images that should not cross the train/validation boundary.
+`configs/local_train.yaml` creates four and two independent copies of the same
+DINOv3 backbone. For a trainer-only check without downloading DINOv3, set `model.use_dummy_backbone:
+true`.
 
-## Local Smoke Training
+### Model choices
 
-The local config uses repeated independent copies of `facebook/dinov3-vitb16-pretrain-lvd1689m`. Set `data.train_manifest` and `data.val_manifest` before running against real data.
+- Use explicit `backbones` lists for heterogeneous committees, as in
+  `configs/local_2gpu.yaml`.
+- `token_concat_attention` keeps token-level fusion and requires matching token
+  counts. `pooled_concat_mlp` pools each slot first and supports different token
+  layouts and hidden sizes.
+- The final prediction is the mean of the two stream probabilities.
+
+### Distributed training
+
+The two-GPU profile uses DDP and NCCL on Linux. Each process holds a complete model
+replica, and `data.batch_size` is per process.
+
+```bash
+torchrun --standalone --nproc_per_node=2 scripts/train.py --config configs/local_2gpu.yaml
+```
+
+For a cluster, use `configs/cluster.yaml` as a base and launch through `torchrun`
+or a wrapper that sets `RANK`, `WORLD_SIZE`, and `LOCAL_RANK`. The profile does not
+choose the number of GPUs; the launcher does.
+
+## Evaluate and Predict
+
+The evaluation manifest defaults to `data.val_manifest`; override it with
+`--manifest` when needed:
 
 ```powershell
-python scripts/train.py --config ./configs/local_train.yaml
+python scripts/evaluate.py `
+  --config configs/local_train.yaml `
+  --checkpoint outputs/local_train/best.pt
 ```
 
-For a trainer-only check without Hugging Face access, set `model.use_dummy_backbone: true` in the local config.
-
-## Model Configuration
-
-Backbone slots are configured per stream. Use explicit `backbones` entries when each slot should load a different DINOv3 variant:
-
-```yaml
-model:
-  latent_dim: 1024
-  token_pooling: attention
-  stream_fusion: token_concat_attention
-  streams:
-    - name: stream1
-      backbones:
-        - model_name_or_path: facebook/dinov3-vits16-pretrain-lvd1689m
-          freeze: false
-        - model_name_or_path: facebook/dinov3-vits16plus-pretrain-lvd1689m
-          freeze: false
-        - model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
-          freeze: false
-        - model_name_or_path: facebook/dinov3-vitl16-pretrain-lvd1689m
-          freeze: false
-    - name: stream2
-      backbones:
-        - model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
-          freeze: false
-        - model_name_or_path: facebook/dinov3-vitl16-pretrain-lvd1689m
-          freeze: false
-```
-
-Use `repeat` plus `backbone` for the repeated-copy MICV interpretation:
-
-```yaml
-model:
-  latent_dim: 768
-  token_pooling: attention
-  stream_fusion: token_concat_attention
-  streams:
-    - name: stream1
-      repeat: 4
-      backbone:
-        model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
-        freeze: false
-    - name: stream2
-      repeat: 2
-      backbone:
-        model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
-        freeze: false
-```
-
-`stream_fusion: token_concat_attention` preserves the original token fusion path and requires matching token counts across slots. `stream_fusion: pooled_concat_mlp` pools each slot first, then concatenates pooled vectors, which is useful for mixed hidden sizes, different token layouts, or ConvNeXt-style experiments.
-
-## 2 GPU Trial
+Prediction accepts an image, an image directory, or a CSV/Parquet manifest and
+writes CSV results. The config must describe the architecture used by the
+checkpoint.
 
 ```powershell
 torchrun --nproc_per_node=2 scripts/train.py --config configs/local_2gpu.yaml
 ```
 
-## Cluster Run
-
-Use `configs/cluster.yaml` as the base profile. The launcher command depends on the environment, but the script is designed for `torchrun` or a SLURM wrapper that sets `RANK`, `WORLD_SIZE`, and `LOCAL_RANK`.
-The cluster profile uses `training.amp_dtype: bf16` for A100 mixed precision without gradient scaling.
-
-## Guesses Chosen Where Unspecified
+## Decisions where paper left unspecified
 
 - Feature aggregation: concatenate slot tokens by default, with an optional pool-first concatenation mode for heterogeneous committees.
 - Stream fusion: average sigmoid probabilities, matching the diagram.
