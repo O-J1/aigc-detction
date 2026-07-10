@@ -1,0 +1,79 @@
+experiment_name: micv_local_train
+
+model:
+  use_dummy_backbone: false
+  dummy_feature_dim: 64
+  latent_dim: 768
+  mlp_hidden_dims: [768, 256]
+  dropout: 0.1
+  token_pooling: attention
+  stream_fusion: token_concat_attention
+  streams:
+    - name: stream1
+      repeat: 4
+      backbone:
+        model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
+        trust_remote_code: true
+        gradient_checkpointing: true
+        freeze: false
+        output_mode: patch_tokens
+        include_cls_token: false
+        include_register_tokens: false
+    - name: stream2
+      repeat: 2
+      backbone:
+        model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
+        trust_remote_code: true
+        gradient_checkpointing: true
+        freeze: false
+        output_mode: patch_tokens
+        include_cls_token: false
+        include_register_tokens: false
+
+data:
+  train_manifest: manifests/smoke-quick.csv
+  val_manifest: manifests/smoke-quick.csv
+  root_dir: null
+  train_split: train
+  val_split: val
+  image_size: 384
+  batch_size: 48
+  num_workers: 6
+  pin_memory: true
+  persistent_workers: true
+  balanced_sampling: true
+
+augmentation:
+  train_difficulty: easy
+  static_val_augmentation: true
+  clean_prob: 0.30
+  max_ops: 5
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+training:
+  epochs: 7
+  learning_rate: 1.0e-5
+  weight_decay: 0.02
+  warmup_epochs: 1
+  min_learning_rate: 1.0e-7
+  amp: true
+  amp_dtype: bf16
+  gradient_accumulation_steps: 1
+  clip_grad_norm: 1.0
+  validate_every_epochs: 1
+  output_dir: outputs/local_train
+  seed: 42
+  deterministic: false
+  log_every_steps: 10
+  resume_from: null
+  auxiliary_stream_loss_weight: 0.5
+
+swa:
+  enabled: true
+  start_epoch: 2
+  learning_rate: 5.0e-6
+
+distributed:
+  enabled: false
+  backend: nccl
