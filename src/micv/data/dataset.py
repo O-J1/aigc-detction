@@ -17,6 +17,7 @@ from torch.utils.data import Dataset, Sampler, WeightedRandomSampler
 from torch.utils.data.dataloader import default_collate
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+Image.MAX_IMAGE_PIXELS = 100_000_000
 
 
 class MultiResolutionBatchCollate:
@@ -100,7 +101,7 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
             "image": image,
             "label": label,
             "path": str(record.path),
-            "metadata": record.metadata,
+            "metadata": {key: str(value) for key, value in record.metadata.items()},
         }
 
     @property
