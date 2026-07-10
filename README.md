@@ -1,15 +1,31 @@
-# AIGC Det
+# AIGC Detection
 
-Pytorch 2.12 guesstimation of the [MICV_framework.md](MICV_framework.md)
+An experimental PyTorch implementation of the architecture described in MICV_framework.md.
 
-The authors have not yet not released code or model weights. The initial defaults follow the paper where possible: two DINOv3 streams, four backbones in stream 1, two backbones in stream 2, per-stream projection, each getting different gradients and MLP heads, late probability averaging, focal loss, AdamW, warmup plus cosine scheduling, SWA, and ROC AUC validation.
+The original authors have not released code or model weights. This implementation follows the paper where possible, including:
 
-<img src="Arch.png" width="950">
+* Two DINOv3 committee streams
+* Four backbones in stream 1 and two in stream 2
+* Per-stream projections and classifier heads
+* Late probability averaging
+* Focal loss, AdamW, warmup with cosine decay, and SWA
+* ROC AUC validation
+
+<img src="Arch.png" width="850">
+
+## Installation
+
+Clone this repository, then create a virtual environment and activate it. Then install `databuilder` in editable mode (its needed for balancing and filtering data):
+
+```py
+python -m pip install --upgrade pip
+python -m pip install -e "databuilder[embed,viz] @ git+https://github.com/O-J1/databuilder.git"
+```
 
 
 ## Data Manifest
 
-The canonical large-data interface is a CSV or Parquet manifest. Required columns:
+Use Parquet for large data, CSV is supported for testing reasons. Required columns:
 
 ```text
 path,label,split
