@@ -2,7 +2,7 @@
 
 An experimental PyTorch implementation of the architecture described in MICV_framework.md.
 
-The original MICV authors have not released code or model weights. This implementation follows the NTIRE 2026: Challenge on Robust AI-Generated Image Detection in the Wild paper where possible, including:
+The original MICV authors have not released code or model weights. This implementation follows the "NTIRE 2026: Challenge on Robust AI-Generated Image Detection in the Wild" paper where possible, including:
 
 * Two DINOv3 committee streams
 * Four backbones in stream 1 and two in stream 2
