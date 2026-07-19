@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, Dataset
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from micv.data import (
+from micv.data import (  # noqa: E402
     AIGCManifestDataset,
     FAKE_CLASS_NAMES,
     REAL_CLASS_NAMES,
@@ -20,9 +20,9 @@ from micv.data import (
     load_rgb_image,
     verify_image,
 )
-from micv.models import MICVDualStreamEnsemble
-from micv.training.trainer import load_checkpoint
-from micv.utils import load_config
+from micv.models import MICVDualStreamEnsemble  # noqa: E402
+from micv.training.trainer import load_checkpoint  # noqa: E402
+from micv.utils import load_config  # noqa: E402
 
 IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 
@@ -83,6 +83,7 @@ def main() -> None:
             root_dir=config.data.root_dir,
             transform=eval_transform,
             bad_image_policy=config.data.bad_image_policy,
+            metadata_columns=config.data.manifest_metadata_columns,
             require_label=False,
         )
         has_ground_truth = _has_manifest_ground_truth(dataset)
@@ -148,10 +149,7 @@ def main() -> None:
 
     if has_ground_truth:
         accuracy = correct_predictions / max(1, labeled_predictions)
-        print(
-            f"accuracy={accuracy:.4f} "
-            f"correct={correct_predictions} total={labeled_predictions}"
-        )
+        print(f"accuracy={accuracy:.4f} correct={correct_predictions} total={labeled_predictions}")
 
 
 def _collect_image_paths(input_path: Path) -> list[Path]:

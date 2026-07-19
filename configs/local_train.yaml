@@ -13,7 +13,8 @@ model:
       repeat: 4
       backbone:
         model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
-        trust_remote_code: true
+        revision: 4bb8bd4cd4cb5a75c872362256dbf53206f0d91a
+        trust_remote_code: false
         gradient_checkpointing: true
         freeze: false
         output_mode: patch_tokens
@@ -23,7 +24,8 @@ model:
       repeat: 2
       backbone:
         model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
-        trust_remote_code: true
+        revision: 4bb8bd4cd4cb5a75c872362256dbf53206f0d91a
+        trust_remote_code: false
         gradient_checkpointing: true
         freeze: false
         output_mode: patch_tokens

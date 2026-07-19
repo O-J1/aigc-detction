@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import math
 import random
+import warnings
 from collections import Counter
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -11,13 +12,10 @@ from typing import Any
 
 import torch
 import torch.distributed as distributed
-from PIL import Image, ImageFile
+from PIL import Image
 from torch.nn import functional as torch_functional
 from torch.utils.data import Dataset, Sampler, WeightedRandomSampler
 from torch.utils.data.dataloader import default_collate
-
-ImageFile.LOAD_TRUNCATED_IMAGES = True
-Image.MAX_IMAGE_PIXELS = 100_000_000
 
 
 class MultiResolutionBatchCollate:
@@ -54,7 +52,7 @@ class MultiResolutionBatchCollate:
         return batch
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ManifestRecord:
     path: Path
     label: int
@@ -73,15 +71,21 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
         transform: Any | None = None,
         bad_image_policy: str = "raise",
         require_label: bool = True,
+        metadata_columns: Sequence[str] | None = None,
     ) -> None:
-        if bad_image_policy not in {"raise", "zero"}:
-            raise ValueError("bad_image_policy must be one of: raise, zero")
+        if bad_image_policy not in {"raise", "zero", "exclude"}:
+            raise ValueError("bad_image_policy must be one of: raise, zero, exclude")
         self.manifest_path = Path(manifest_path)
         self.root_dir = Path(root_dir) if root_dir is not None else self.manifest_path.parent
         self.transform = transform
         self.bad_image_policy = bad_image_policy
         self.require_label = require_label
+        self.metadata_columns = None if metadata_columns is None else tuple(metadata_columns)
+        self.corruption_count = 0
+        self.corrupt_paths: list[str] = []
         self.records = self._load_records(split=split)
+        if self.bad_image_policy == "exclude":
+            self.records = self._exclude_corrupt_records(self.records)
         if not self.records:
             raise ValueError(f"No records found in {self.manifest_path} for split={split!r}")
 
@@ -111,14 +115,14 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
     def _load_records(self, split: str | None) -> list[ManifestRecord]:
         suffix = self.manifest_path.suffix.lower()
         if suffix == ".csv":
-            rows = self._read_csv_rows()
+            rows = self._iter_csv_rows()
         elif suffix == ".parquet":
-            rows = self._read_parquet_rows()
+            rows = self._iter_parquet_rows(split=split)
         else:
             raise ValueError(f"Unsupported manifest format: {self.manifest_path.suffix}")
 
         records: list[ManifestRecord] = []
-        for row_number, row in enumerate(rows, start=2):
+        for row_number, row in rows:
             row_split = _normalize_split_value(row.get("split"))
             if split is not None:
                 if row_split is None:
@@ -136,22 +140,81 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
             manifest_path = str(row["path"])
             image_path = self._resolve_path(manifest_path)
             label = normalize_label(row["label"]) if "label" in row and row["label"] != "" else -1
-            metadata = {key: value for key, value in row.items() if key not in {"path", "label"}}
+            metadata = {
+                key: value
+                for key, value in row.items()
+                if key not in {"path", "label"} and self._keep_metadata_column(key)
+            }
             metadata.setdefault("manifest_path", manifest_path)
-            records.append(ManifestRecord(path=image_path, label=label, split=row_split, metadata=metadata))
+            records.append(
+                ManifestRecord(path=image_path, label=label, split=row_split, metadata=metadata)
+            )
         return records
 
-    def _read_csv_rows(self) -> list[dict[str, Any]]:
+    def _iter_csv_rows(self) -> Iterator[tuple[int, dict[str, Any]]]:
         with self.manifest_path.open("r", newline="", encoding="utf-8") as manifest_file:
-            return list(csv.DictReader(manifest_file))
+            for row_number, row in enumerate(csv.DictReader(manifest_file), start=2):
+                yield row_number, row
 
-    def _read_parquet_rows(self) -> list[dict[str, Any]]:
+    def _iter_parquet_rows(self, split: str | None) -> Iterator[tuple[int, dict[str, Any]]]:
         try:
-            import pandas as pd
+            import pyarrow.dataset as arrow_dataset
         except ImportError as error:
-            raise ImportError("Install pandas and pyarrow to read Parquet manifests.") from error
-        dataframe = pd.read_parquet(self.manifest_path)
-        return dataframe.to_dict(orient="records")
+            raise ImportError("Install pyarrow to read Parquet manifests.") from error
+
+        dataset = arrow_dataset.dataset(self.manifest_path, format="parquet")
+        available_columns = set(dataset.schema.names)
+        required_columns = {"path"}
+        if self.require_label:
+            required_columns.add("label")
+        if split is not None:
+            required_columns.add("split")
+        missing_columns = required_columns - available_columns
+        if missing_columns:
+            missing = ", ".join(sorted(missing_columns))
+            raise ValueError(f"Manifest is missing required column(s): {missing}")
+
+        if split is not None:
+            # Validate the split column independently, while reading only that
+            # column, so null/blank rows are not silently hidden by pushdown.
+            split_scanner = dataset.scanner(columns=["split"])
+            for batch in split_scanner.to_batches():
+                if any(
+                    _normalize_split_value(value) is None for value in batch.column(0).to_pylist()
+                ):
+                    raise ValueError(
+                        f"Manifest {self.manifest_path} contains a missing split "
+                        f"for requested split={split!r}."
+                    )
+
+        selected_columns = self._selected_parquet_columns(dataset.schema.names)
+        filter_expression = arrow_dataset.field("split") == split if split is not None else None
+        scanner = dataset.scanner(columns=selected_columns, filter=filter_expression)
+        row_number = 2
+        for batch in scanner.to_batches():
+            columns = batch.to_pydict()
+            for batch_index in range(batch.num_rows):
+                yield (
+                    row_number,
+                    {column_name: values[batch_index] for column_name, values in columns.items()},
+                )
+                row_number += 1
+
+    def _selected_parquet_columns(self, available_columns: Sequence[str]) -> list[str]:
+        if self.metadata_columns is None:
+            return list(available_columns)
+        requested = {"path", "split"}
+        if self.require_label:
+            requested.add("label")
+        requested.update(self.metadata_columns)
+        return [column for column in available_columns if column in requested]
+
+    def _keep_metadata_column(self, column_name: str) -> bool:
+        return (
+            self.metadata_columns is None
+            or column_name in self.metadata_columns
+            or column_name == "split"
+        )
 
     def _resolve_path(self, path_value: str) -> Path:
         image_path = Path(path_value)
@@ -162,10 +225,37 @@ class AIGCManifestDataset(Dataset[dict[str, Any]]):
     def _load_image(self, image_path: Path) -> Image.Image:
         try:
             return load_rgb_image(image_path)
-        except Exception:
+        except Exception as error:
             if self.bad_image_policy == "zero":
+                self._record_corruption(image_path)
+                warnings.warn(
+                    f"Replacing unreadable image with zeros: {image_path} ({error})",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 return Image.new("RGB", (512, 512), color=(0, 0, 0))
             raise
+
+    def _exclude_corrupt_records(self, records: Sequence[ManifestRecord]) -> list[ManifestRecord]:
+        valid_records: list[ManifestRecord] = []
+        for record in records:
+            try:
+                verify_image(record.path)
+            except Exception:
+                self._record_corruption(record.path)
+                continue
+            valid_records.append(record)
+        if self.corruption_count:
+            warnings.warn(
+                f"Excluded {self.corruption_count} unreadable image(s) from {self.manifest_path}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return valid_records
+
+    def _record_corruption(self, image_path: Path) -> None:
+        self.corruption_count += 1
+        self.corrupt_paths.append(str(image_path))
 
 
 def verify_image(image_path: str | Path) -> None:
@@ -247,12 +337,16 @@ class DistributedWeightedSampler(Sampler[int]):
         self.weights = _make_label_weights(dataset)
 
         if self.drop_last and len(self.dataset) % self.num_replicas != 0:
-            self.num_samples = math.ceil((len(self.dataset) - self.num_replicas) / self.num_replicas)
+            self.num_samples = math.ceil(
+                (len(self.dataset) - self.num_replicas) / self.num_replicas
+            )
         else:
             self.num_samples = math.ceil(len(self.dataset) / self.num_replicas)
         self.total_size = self.num_samples * self.num_replicas
         if not self.replacement and self.total_size > len(self.dataset):
-            raise ValueError("replacement=False requires drop_last=True when dataset is not evenly divisible")
+            raise ValueError(
+                "replacement=False requires drop_last=True when dataset is not evenly divisible"
+            )
 
     def __iter__(self) -> Iterator[int]:
         generator = torch.Generator()

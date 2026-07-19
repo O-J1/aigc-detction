@@ -13,7 +13,7 @@ class BackboneSettings:
     model_name_or_path: str = "facebook/dinov3-vits16-pretrain-lvd1689m"
     revision: str | None = None
     cache_dir: str | None = None
-    trust_remote_code: bool = True
+    trust_remote_code: bool = False
     feature_dim: int | None = None
     pooling: str = "auto"
     freeze: bool = False
@@ -62,6 +62,9 @@ class DataSettings:
     persistent_workers: bool = True
     balanced_sampling: bool = True
     bad_image_policy: str = "raise"
+    manifest_metadata_columns: list[str] = field(
+        default_factory=lambda: ["md5", "group_id", "generator"]
+    )
 
 
 @dataclass

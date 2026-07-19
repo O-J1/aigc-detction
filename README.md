@@ -15,12 +15,28 @@ The original authors have not released code or model weights. This implementatio
 
 ## Installation
 
-Clone this repository, create and activate a virtual environment, The `large-data` extra is required for Parquet manifests.
+The project targets Python 3.13. Direct dependencies are exactly pinned in
+`pyproject.toml` and mirrored in `constraints/py313-cu130.txt`. The PyTorch pair is
+pinned to the CUDA 13.0 wheels configured under `tool.uv.sources`.
+
+Using `uv`:
+
+```powershell
+uv sync --all-extras
+```
+
+Using `pip`:
 
 ```powershell
 python -m pip install --upgrade pip
-python -m pip install -e ".[large-data]"
+python -m pip install torch==2.12.1 torchvision==0.27.1 `
+  --index-url https://download.pytorch.org/whl/cu130
+python -m pip install -e ".[large-data,dev]" `
+  -c constraints/py313-cu130.txt
 ```
+
+Update the project metadata and constraint file together when changing a
+dependency; a regression test rejects unpinned or divergent entries.
 
 Dataset construction is handled by the separate
 [`databuilder`](https://github.com/O-J1/databuilder) repository. Install it from
@@ -28,7 +44,7 @@ source in the same environment:
 
 ```powershell
 git clone https://github.com/O-J1/databuilder.git ..\databuilder
-python -m pip install -e "..\databuilder[embed,viz]"
+python -m pip install -e "..\databuilder[embed,viz,dev]"
 ```
 
 ## Prepare the Data
@@ -53,6 +69,11 @@ The detector accepts CSV and Parquet manifests. Training and evaluation require
 `path`, `label`, and `split` columns. Labels may be `0`/`1` or names such as
 `real`, `fake`, `ai`, and `generated`. Relative image paths resolve against
 `data.root_dir`, or against the manifest's directory when `root_dir` is unset.
+Parquet loading uses a PyArrow scanner with split pushdown and column projection;
+`data.manifest_metadata_columns` controls the optional columns retained in memory.
+For corrupted inputs, `data.bad_image_policy: raise` is the safe default;
+`exclude` pre-validates and reports skipped records, while legacy `zero` mode emits
+warnings and exposes corruption counts instead of silently substituting images.
 
 For a quick folder-to-CSV conversion without the full data pipeline, the legacy
 helper remains available:
@@ -82,9 +103,17 @@ python scripts/train.py --config configs/local_train.yaml
 python scripts/train.py --config configs/local_train.yaml --resume outputs/local_train/latest.pt
 ```
 
+`latest.pt` contains the primary model, optimizer, scheduler, scaler, best ROC AUC,
+SWA averaged parameters and scheduler, per-rank random-number-generator states,
+and resolved backbone revisions. Resume therefore continues model selection and
+SWA averaging rather than reinitializing them.
+
 `configs/local_train.yaml` creates four and two independent copies of the same
-DINOv3 backbone. For a trainer-only check without downloading DINOv3, set `model.use_dummy_backbone:
-true`.
+DINOv3 backbone. The checked-in Hugging Face models use immutable commit revisions
+and `trust_remote_code: false`; the resolved revision is recorded in checkpoints
+and checked when loading them. Enable remote code only for a repository that
+requires it, and keep an immutable revision in that experiment config. For a
+trainer-only check without downloading DINOv3, set `model.use_dummy_backbone: true`.
 
 ### Model choices
 
@@ -124,7 +153,11 @@ writes CSV results. The config must describe the architecture used by the
 checkpoint.
 
 ```powershell
-torchrun --nproc_per_node=2 scripts/train.py --config configs/local_2gpu.yaml
+python scripts/predict.py `
+  --config configs/local_train.yaml `
+  --checkpoint outputs/local_train/best.pt `
+  --input D:\datasets\images `
+  --output outputs\predictions.csv
 ```
 
 ## Decisions where paper left unspecified
@@ -139,5 +172,5 @@ torchrun --nproc_per_node=2 scripts/train.py --config configs/local_2gpu.yaml
 ## Optional Training Extras
 
 - Multi-resolution training: set `data.train_image_sizes` (e.g., `[384, 448, 512]`) to resize each training batch to a randomly sampled square resolution. Evaluation always uses `data.image_size`.
-- Per-backbone augmented views: set `model.per_backbone_views: true` to feed each committee slot a differently-augmented view of the same image, forcing ensemble diversity for repeated-copy committees. Evaluation still uses a single shared view.
+- Per-backbone augmented views: set `model.per_backbone_views: true` to create one distinct augmentation per committee slot. The default four-slot and two-slot streams therefore receive six non-overlapping views. Evaluation still uses a single shared view.
 - Inference TTA: `scripts/predict.py --tta hflip` averages the fused probability over the original and horizontally flipped input.

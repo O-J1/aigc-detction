@@ -52,7 +52,9 @@ class MICVStream(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.backbones = nn.ModuleList([backbone_factory() for backbone_factory in backbone_factories])
+        self.backbones = nn.ModuleList(
+            [backbone_factory() for backbone_factory in backbone_factories]
+        )
         slot_dims = [self._feature_dim(backbone) for backbone in self.backbones]
 
         self.stream_fusion = stream_fusion
@@ -150,7 +152,9 @@ class MICVDualStreamEnsemble(nn.Module):
         )
 
         stream_factories = [
-            _build_backbone_factories(stream_config.backbone_values, model_config, use_dummy_backbone)
+            _build_backbone_factories(
+                stream_config.backbone_values, model_config, use_dummy_backbone
+            )
             for stream_config in stream_configs
         ]
 
@@ -165,8 +169,23 @@ class MICVDualStreamEnsemble(nn.Module):
         )
 
     def forward(self, images: Tensor) -> dict[str, Tensor]:
-        stream1_logits = self.stream1(images)
-        stream2_logits = self.stream2(images)
+        if images.ndim == 5:
+            stream1_count = len(self.stream1.backbones)
+            stream2_count = len(self.stream2.backbones)
+            required_views = stream1_count + stream2_count
+            if images.shape[1] < required_views:
+                raise ValueError(
+                    "Dual-stream per-backbone input requires at least "
+                    f"{required_views} views, got {images.shape[1]}."
+                )
+            stream1_images = images[:, :stream1_count]
+            stream2_images = images[:, stream1_count : stream1_count + stream2_count]
+        else:
+            stream1_images = images
+            stream2_images = images
+
+        stream1_logits = self.stream1(stream1_images)
+        stream2_logits = self.stream2(stream2_images)
 
         # Probabilities are computed in float32 so that downstream losses and
         # ROC AUC keep full resolution even under fp16/bf16 autocast.
@@ -188,12 +207,16 @@ def _validate_model_options(model_config: Mapping[str, Any]) -> None:
     stream_fusion = str(model_config.get("stream_fusion", "token_concat_attention"))
     if stream_fusion not in SUPPORTED_STREAM_FUSION_MODES:
         supported = ", ".join(sorted(SUPPORTED_STREAM_FUSION_MODES))
-        raise ValueError(f"Unsupported stream_fusion={stream_fusion!r}. Supported modes: {supported}")
+        raise ValueError(
+            f"Unsupported stream_fusion={stream_fusion!r}. Supported modes: {supported}"
+        )
 
     token_pooling = str(model_config.get("token_pooling", "attention"))
     if token_pooling not in SUPPORTED_TOKEN_POOLING_MODES:
         supported = ", ".join(sorted(SUPPORTED_TOKEN_POOLING_MODES))
-        raise ValueError(f"Unsupported token_pooling={token_pooling!r}. Supported modes: {supported}")
+        raise ValueError(
+            f"Unsupported token_pooling={token_pooling!r}. Supported modes: {supported}"
+        )
 
 
 def _resolve_stream_configs(
@@ -271,8 +294,7 @@ def _build_backbone_factories(
         dummy_feature_dim = int(model_config.get("dummy_feature_dim", 64))
 
         return tuple(
-            _tiny_backbone_factory(dummy_feature_dim=dummy_feature_dim)
-            for _ in stream_backbones
+            _tiny_backbone_factory(dummy_feature_dim=dummy_feature_dim) for _ in stream_backbones
         )
 
     return tuple(_dinov3_backbone_factory(backbone_values) for backbone_values in stream_backbones)

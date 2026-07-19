@@ -146,3 +146,27 @@ distributed:
     prediction_lines = predictions_path.read_text(encoding="utf-8").strip().splitlines()
     assert prediction_lines[0].startswith("path,prob_ai,prediction")
     assert len(prediction_lines) == 1 + len(real_paths) + len(fake_paths)
+
+
+def test_train_uses_one_view_per_committee_slot() -> None:
+    train_module = _load_script_module("micv_train_view_count", "train.py")
+    config = load_config(CONFIG_DIR / "cluster.yaml")
+
+    assert train_module._resolve_num_views(config.model) == 6
+
+
+def test_standalone_evaluation_uses_configured_static_severity(monkeypatch) -> None:
+    evaluate_module = _load_script_module("micv_evaluate_transform", "evaluate.py")
+    config = load_config(CONFIG_DIR / "smoke.yaml")
+    captured: dict[str, object] = {}
+
+    def fake_build_eval_transform(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(evaluate_module, "build_eval_transform", fake_build_eval_transform)
+
+    evaluate_module._build_configured_eval_transform(config, static_augmentation=True)
+
+    assert captured["static_augmentation"] is True
+    assert captured["static_severity"] == config.augmentation.static_val_severity

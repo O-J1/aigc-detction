@@ -11,11 +11,11 @@ from torch.utils.data import DataLoader
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from micv.data import AIGCManifestDataset, build_eval_transform
-from micv.models import MICVDualStreamEnsemble
-from micv.training.losses import CombinedMICVLoss
-from micv.training.trainer import Trainer, load_checkpoint
-from micv.utils import load_config
+from micv.data import AIGCManifestDataset, build_eval_transform  # noqa: E402
+from micv.models import MICVDualStreamEnsemble  # noqa: E402
+from micv.training.losses import CombinedMICVLoss  # noqa: E402
+from micv.training.trainer import Trainer, load_checkpoint  # noqa: E402
+from micv.utils import load_config  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,6 +27,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _build_configured_eval_transform(config, static_augmentation: bool):
+    return build_eval_transform(
+        image_size=config.data.image_size,
+        mean=config.augmentation.mean,
+        std=config.augmentation.std,
+        static_augmentation=static_augmentation or config.augmentation.static_val_augmentation,
+        static_severity=config.augmentation.static_val_severity,
+    )
+
+
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
@@ -35,18 +45,14 @@ def main() -> None:
         raise ValueError("Provide --manifest or set data.val_manifest in the config.")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    eval_transform = build_eval_transform(
-        image_size=config.data.image_size,
-        mean=config.augmentation.mean,
-        std=config.augmentation.std,
-        static_augmentation=args.static_augmentation or config.augmentation.static_val_augmentation,
-    )
+    eval_transform = _build_configured_eval_transform(config, args.static_augmentation)
     dataset = AIGCManifestDataset(
         manifest_path,
         split=config.data.val_split,
         root_dir=config.data.root_dir,
         transform=eval_transform,
         bad_image_policy=config.data.bad_image_policy,
+        metadata_columns=config.data.manifest_metadata_columns,
     )
     data_loader = DataLoader(
         dataset,

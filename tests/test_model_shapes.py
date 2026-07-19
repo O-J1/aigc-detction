@@ -143,11 +143,49 @@ def test_micv_ensemble_accepts_multi_view_input() -> None:
         }
     )
 
-    outputs = model(torch.randn(2, 4, 3, 64, 64))
+    outputs = model(torch.randn(2, 6, 3, 64, 64))
 
     assert outputs["fused_prob"].shape == (2,)
     assert torch.all(outputs["fused_prob"] >= 0.0)
     assert torch.all(outputs["fused_prob"] <= 1.0)
+
+
+def test_micv_ensemble_routes_unique_views_across_both_streams() -> None:
+    model = MICVDualStreamEnsemble(
+        stream1_backbone_factories=[_RecordingBackbone] * 4,
+        stream2_backbone_factories=[_RecordingBackbone] * 2,
+        latent_dim=16,
+        mlp_hidden_dims=[8],
+        dropout=0.0,
+    )
+    views = torch.stack(
+        [torch.full((2, 3, 8, 8), float(view_index)) for view_index in range(6)],
+        dim=1,
+    )
+
+    model(views)
+
+    backbones = list(model.stream1.backbones) + list(model.stream2.backbones)
+    for view_index, backbone in enumerate(backbones):
+        assert backbone.last_input is not None
+        assert torch.all(backbone.last_input == float(view_index))
+
+
+def test_micv_ensemble_rejects_too_few_per_backbone_views() -> None:
+    model = MICVDualStreamEnsemble.from_config(
+        {
+            "use_dummy_backbone": True,
+            "dummy_feature_dim": 16,
+            "stream1_backbones": 4,
+            "stream2_backbones": 2,
+            "latent_dim": 32,
+            "mlp_hidden_dims": [16],
+            "dropout": 0.0,
+        }
+    )
+
+    with pytest.raises(ValueError, match="requires at least 6 views"):
+        model(torch.randn(2, 4, 3, 64, 64))
 
 
 def test_micv_from_config_rejects_invalid_stream_fusion() -> None:

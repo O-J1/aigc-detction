@@ -12,28 +12,32 @@ model:
     - name: stream1
       backbones:
         - model_name_or_path: facebook/dinov3-vits16-pretrain-lvd1689m
-          trust_remote_code: true
+          revision: 1c5ca6c02d42f58a290bf983d66b85d0cd2b3bcd
+          trust_remote_code: false
           gradient_checkpointing: true
           freeze: false
           output_mode: patch_tokens
           include_cls_token: false
           include_register_tokens: false
         - model_name_or_path: facebook/dinov3-vits16plus-pretrain-lvd1689m
-          trust_remote_code: true
+          revision: 11cdc4d05faa88bf4493c4424132fa047e7f8720
+          trust_remote_code: false
           gradient_checkpointing: true
           freeze: false
           output_mode: patch_tokens
           include_cls_token: false
           include_register_tokens: false
         - model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
-          trust_remote_code: true
+          revision: 4bb8bd4cd4cb5a75c872362256dbf53206f0d91a
+          trust_remote_code: false
           gradient_checkpointing: true
           freeze: false
           output_mode: patch_tokens
           include_cls_token: false
           include_register_tokens: false
         - model_name_or_path: facebook/dinov3-vitl16-pretrain-lvd1689m
-          trust_remote_code: true
+          revision: dd0a398fa8e84f2a37179332f6c561d20276300b
+          trust_remote_code: false
           gradient_checkpointing: true
           freeze: false
           output_mode: patch_tokens
@@ -42,14 +46,16 @@ model:
     - name: stream2
       backbones:
         - model_name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
-          trust_remote_code: true
+          revision: 4bb8bd4cd4cb5a75c872362256dbf53206f0d91a
+          trust_remote_code: false
           gradient_checkpointing: true
           freeze: false
           output_mode: patch_tokens
           include_cls_token: false
           include_register_tokens: false
         - model_name_or_path: facebook/dinov3-vitl16-pretrain-lvd1689m
-          trust_remote_code: true
+          revision: dd0a398fa8e84f2a37179332f6c561d20276300b
+          trust_remote_code: false
           gradient_checkpointing: true
           freeze: false
           output_mode: patch_tokens

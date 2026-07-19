@@ -8,6 +8,10 @@ model:
   dropout: 0.1
   token_pooling: attention
   stream_fusion: token_concat_attention
+  backbone:
+    model_name_or_path: facebook/dinov3-vits16-pretrain-lvd1689m
+    revision: 1c5ca6c02d42f58a290bf983d66b85d0cd2b3bcd
+    trust_remote_code: false
 
 data:
   train_manifest: D:/dbuild-smoke/work/artifacts/manifest/manifest.parquet

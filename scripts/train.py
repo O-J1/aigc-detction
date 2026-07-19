@@ -24,9 +24,13 @@ from micv.data import (  # noqa: E402
 )
 from micv.models import MICVDualStreamEnsemble  # noqa: E402
 from micv.training.distributed import get_rank, init_distributed_from_env, is_distributed  # noqa: E402
-from micv.training.losses import BinaryFocalLossWithLogits, BinaryFocalLossWithProbabilities, CombinedMICVLoss  # noqa: E402
+from micv.training.losses import (  # noqa: E402
+    BinaryFocalLossWithLogits,
+    BinaryFocalLossWithProbabilities,
+    CombinedMICVLoss,
+)
 from micv.training.scheduler import build_param_groups, build_warmup_cosine_scheduler  # noqa: E402
-from micv.training.trainer import Trainer, load_checkpoint  # noqa: E402
+from micv.training.trainer import Trainer  # noqa: E402
 from micv.utils import load_config, seed_everything  # noqa: E402
 
 
@@ -46,7 +50,7 @@ def _resolve_num_views(model_settings) -> int:
             slot_counts.append(int(stream.repeat))
     if not slot_counts:
         slot_counts = [model_settings.stream1_backbones, model_settings.stream2_backbones]
-    return max(slot_counts)
+    return sum(slot_counts)
 
 
 def main() -> None:
@@ -58,7 +62,11 @@ def main() -> None:
         distributed_started = init_distributed_from_env(config.distributed.backend)
 
     seed_everything(config.training.seed + get_rank(), deterministic=config.training.deterministic)
-    device = torch.device("cuda", int(torch.cuda.current_device())) if torch.cuda.is_available() else torch.device("cpu")
+    device = (
+        torch.device("cuda", int(torch.cuda.current_device()))
+        if torch.cuda.is_available()
+        else torch.device("cpu")
+    )
 
     if config.data.train_manifest is None:
         raise ValueError("data.train_manifest must be set before training.")
@@ -97,6 +105,7 @@ def main() -> None:
         root_dir=config.data.root_dir,
         transform=train_transform,
         bad_image_policy=config.data.bad_image_policy,
+        metadata_columns=config.data.manifest_metadata_columns,
     )
     val_dataset = None
     degraded_val_dataset = None
@@ -107,6 +116,7 @@ def main() -> None:
             root_dir=config.data.root_dir,
             transform=eval_transform,
             bad_image_policy=config.data.bad_image_policy,
+            metadata_columns=config.data.manifest_metadata_columns,
         )
         if degraded_eval_transform is not None:
             degraded_val_dataset = AIGCManifestDataset(
@@ -115,6 +125,7 @@ def main() -> None:
                 root_dir=config.data.root_dir,
                 transform=degraded_eval_transform,
                 bad_image_policy=config.data.bad_image_policy,
+                metadata_columns=config.data.manifest_metadata_columns,
             )
 
     if is_distributed() and config.data.balanced_sampling:
@@ -174,7 +185,9 @@ def main() -> None:
             f"batch_size={config.data.batch_size}"
         )
         if val_dataset is not None and val_loader is not None:
-            print(f"val records={len(val_dataset)} steps={len(val_loader)} batch_size={config.data.batch_size}")
+            print(
+                f"val records={len(val_dataset)} steps={len(val_loader)} batch_size={config.data.batch_size}"
+            )
 
     model = MICVDualStreamEnsemble.from_config(asdict(config.model)).to(device)
     if distributed_started:
@@ -228,14 +241,7 @@ def main() -> None:
     resume_path = args.resume or config.training.resume_from
     start_epoch = 0
     if resume_path is not None:
-        start_epoch = load_checkpoint(
-            resume_path,
-            model=model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            scaler=trainer.scaler,
-            map_location=device,
-        )
+        start_epoch = trainer.load_checkpoint(resume_path, map_location=device)
     trainer.fit(config.training.epochs, start_epoch=start_epoch)
 
 

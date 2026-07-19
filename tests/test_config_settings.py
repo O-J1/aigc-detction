@@ -106,8 +106,19 @@ model:
     assert config.model.stream_fusion == "token_concat_attention"
     assert len(config.model.streams) == 2
     assert config.model.streams[0].name == "stream1"
-    assert config.model.streams[0].backbones[0].model_name_or_path.endswith("vits16-pretrain-lvd1689m")
+    assert (
+        config.model.streams[0].backbones[0].model_name_or_path.endswith("vits16-pretrain-lvd1689m")
+    )
     assert config.model.streams[0].backbones[1].freeze is True
     assert config.model.streams[1].repeat == 2
     assert config.model.streams[1].backbone is not None
     assert config.model.streams[1].backbone.model_name_or_path.endswith("vitb16-pretrain-lvd1689m")
+
+
+def test_remote_model_code_is_opt_in_by_default(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("model: {}\n", encoding="utf-8")
+
+    config = load_config(config_path)
+
+    assert config.model.backbone.trust_remote_code is False

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+import re
 from typing import Any, Mapping
+import warnings
 
 import torch
 from torch import Tensor, nn
@@ -14,7 +17,7 @@ class DINOv3BackboneConfig:
     model_name_or_path: str
     revision: str | None = None
     cache_dir: str | None = None
-    trust_remote_code: bool = True
+    trust_remote_code: bool = False
     feature_dim: int | None = None
 
     # New
@@ -32,7 +35,9 @@ class DINOv3Backbone(nn.Module):
     def __init__(self, config: DINOv3BackboneConfig) -> None:
         super().__init__()
         self.config = config
+        _warn_for_unpinned_remote_model(config)
         self.model = self._load_hf_model(config)
+        self.resolved_revision = _resolved_model_revision(config, self.model)
         self.feature_dim = config.feature_dim or self._feature_dim_from_config()
 
         if self.feature_dim is None:
@@ -51,6 +56,15 @@ class DINOv3Backbone(nn.Module):
         if config.freeze:
             for p in self.model.parameters():
                 p.requires_grad = False
+            self.model.eval()
+
+    def train(self, mode: bool = True) -> DINOv3Backbone:
+        super().train(mode)
+        if self.config.freeze:
+            # A frozen backbone must also keep stochastic layers and any
+            # running-statistic modules in evaluation mode.
+            self.model.eval()
+        return self
 
     def forward(self, images: Tensor) -> Tensor:
         outputs = self._forward_hf(images)
@@ -81,7 +95,9 @@ class DINOv3Backbone(nn.Module):
         if last_hidden_state.ndim != 3:
             raise ValueError(f"Expected B,N,C token tensor, got {tuple(last_hidden_state.shape)}")
 
-        num_registers = int(getattr(getattr(self.model, "config", None), "num_register_tokens", 0) or 0)
+        num_registers = int(
+            getattr(getattr(self.model, "config", None), "num_register_tokens", 0) or 0
+        )
 
         pieces: list[Tensor] = []
 
@@ -136,11 +152,41 @@ class DINOv3Backbone(nn.Module):
 
         return AutoModel.from_pretrained(config.model_name_or_path, **kwargs)
 
+    def checkpoint_metadata(self) -> dict[str, Any]:
+        return {
+            "model_name_or_path": self.config.model_name_or_path,
+            "requested_revision": self.config.revision,
+            "resolved_revision": self.resolved_revision,
+            "trust_remote_code": self.config.trust_remote_code,
+        }
+
 
 def _get_output(outputs: Any, name: str) -> Any:
     if isinstance(outputs, Mapping):
         return outputs.get(name)
     return getattr(outputs, name, None)
+
+
+def _resolved_model_revision(config: DINOv3BackboneConfig, model: nn.Module) -> str | None:
+    model_config = getattr(model, "config", None)
+    resolved = getattr(model_config, "_commit_hash", None)
+    if isinstance(resolved, str) and resolved:
+        return resolved
+    return config.revision
+
+
+def _warn_for_unpinned_remote_model(config: DINOv3BackboneConfig) -> None:
+    model_path = Path(config.model_name_or_path).expanduser()
+    if model_path.exists():
+        return
+    revision = config.revision
+    if revision is None or re.fullmatch(r"[0-9a-fA-F]{40}", revision) is None:
+        warnings.warn(
+            "Remote model revision is not pinned to a 40-character commit hash; "
+            "training may not be reproducible.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 class TinyConvBackbone(nn.Module):
@@ -159,5 +205,5 @@ class TinyConvBackbone(nn.Module):
         )
 
     def forward(self, images: Tensor) -> Tensor:
-        features = self.encoder(images)              # B,C,H,W
-        return features.flatten(2).transpose(1, 2)   # B,N,C
+        features = self.encoder(images)  # B,C,H,W
+        return features.flatten(2).transpose(1, 2)  # B,N,C
